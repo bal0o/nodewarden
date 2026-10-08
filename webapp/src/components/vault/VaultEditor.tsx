@@ -134,6 +134,7 @@ function WebsiteRow(props: WebsiteRowProps) {
 
 export default function VaultEditor(props: VaultEditorProps) {
   const createTypeOptions = getCreateTypeOptions();
+  const passwordsHidden = !props.isCreating && props.selectedCipher?.viewPassword === false;
   const normalizedDraftCardBrand = normalizeCardBrand(props.draft.cardBrand);
   const cardBrandOptions = normalizedDraftCardBrand && !CARD_BRAND_OPTIONS.includes(normalizedDraftCardBrand as any)
     ? [...CARD_BRAND_OPTIONS, normalizedDraftCardBrand]
@@ -402,19 +403,19 @@ export default function VaultEditor(props: VaultEditorProps) {
             </label>
             <label className="field">
               <span>{t('txt_password')}</span>
-              <input className="input" value={props.draft.loginPassword} onInput={(e) => props.onUpdateDraft({ loginPassword: (e.currentTarget as HTMLInputElement).value })} />
+              <input className="input" type={passwordsHidden ? 'password' : 'text'} disabled={passwordsHidden} value={props.draft.loginPassword} onInput={(e) => props.onUpdateDraft({ loginPassword: (e.currentTarget as HTMLInputElement).value })} />
             </label>
           </div>
           <label className="field">
             <span>{t('txt_totp_secret')}</span>
             <div className="input-action-wrap">
-              <input className="input" value={props.draft.loginTotp} onInput={(e) => props.onUpdateDraft({ loginTotp: (e.currentTarget as HTMLInputElement).value })} />
+              <input className="input" type={passwordsHidden ? 'password' : 'text'} disabled={passwordsHidden} value={props.draft.loginTotp} onInput={(e) => props.onUpdateDraft({ loginTotp: (e.currentTarget as HTMLInputElement).value })} />
               <button
                 type="button"
                 className="input-icon-btn"
                 title={t('txt_scan_totp_qr')}
                 aria-label={t('txt_scan_totp_qr')}
-                disabled={props.busy}
+                disabled={props.busy || passwordsHidden}
                 onClick={() => {
                   setTotpQrStatus('');
                   setTotpQrOpen(true);
@@ -771,6 +772,8 @@ export default function VaultEditor(props: VaultEditorProps) {
                       />
                       <span>{toBooleanFieldValue(field.value) ? t('txt_checked') : t('txt_unchecked')}</span>
                     </label>
+                  ) : field.type === 1 && passwordsHidden ? (
+                    <input className="input" type="password" value={field.value} disabled />
                   ) : (
                     <textarea
                       className="input textarea custom-field-textarea"
@@ -799,7 +802,7 @@ export default function VaultEditor(props: VaultEditorProps) {
             {t('txt_cancel')}
           </button>
         </div>
-        {!props.isCreating && props.selectedCipher && (
+        {!props.isCreating && props.selectedCipher && props.selectedCipher.permissions?.delete !== false && (
           <button type="button" className="btn btn-danger" disabled={props.busy} onClick={props.onDeleteSelected}>
             <Trash2 size={14} className="btn-icon" />
             {t('txt_delete')}

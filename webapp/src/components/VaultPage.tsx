@@ -26,6 +26,7 @@ import {
   isCipherVisibleInNormalVault,
   isCipherVisibleInTrash,
   passportListSubtitle,
+  collectionDisplayName,
   sortTimeValue,
   type DuplicateDetectionMode,
   type SidebarFilter,
@@ -34,12 +35,18 @@ import {
 import { calcTotpNow, type TotpCodeResult } from '@/lib/crypto';
 import { computeSshFingerprint, generateDefaultSshKeyMaterial } from '@/lib/ssh';
 import { ChevronLeft } from 'lucide-preact';
-import type { Cipher, CustomFieldType, Folder, VaultDraft, VaultDraftField } from '@/lib/types';
+import type { Cipher, Collection, CustomFieldType, Folder, ProfileOrganization, VaultDraft, VaultDraftField } from '@/lib/types';
+import type { OrganizationActions } from '@/hooks/useOrganizationActions';
+import { CipherCollectionsDialog, CreateOrganizationDialog, ShareCipherDialog, shareableOrganizations } from '@/components/vault/OrganizationDialogs';
+import OrganizationManagerDialog from '@/components/vault/OrganizationManagerDialog';
 import { t } from '@/lib/i18n';
 
 interface VaultPageProps {
   ciphers: Cipher[];
   folders: Folder[];
+  organizations: ProfileOrganization[];
+  collections: Collection[];
+  organizationActions: OrganizationActions;
   loading: boolean;
   error: string;
   emailForReprompt: string;
@@ -110,6 +117,10 @@ export default function VaultPage(props: VaultPageProps) {
   const [renameFolderName, setRenameFolderName] = useState('');
   const [pendingDeleteFolder, setPendingDeleteFolder] = useState<Folder | null>(null);
   const [deleteAllFoldersOpen, setDeleteAllFoldersOpen] = useState(false);
+  const [createOrganizationOpen, setCreateOrganizationOpen] = useState(false);
+  const [managedOrganizationId, setManagedOrganizationId] = useState<string | null>(null);
+  const [sharingCipher, setSharingCipher] = useState<Cipher | null>(null);
+  const [collectionsCipher, setCollectionsCipher] = useState<Cipher | null>(null);
   const [totpLive, setTotpLive] = useState<TotpCodeResult | null>(null);
   const [hiddenFieldVisibleMap, setHiddenFieldVisibleMap] = useState<Record<number, boolean>>({});
   const [attachmentQueue, setAttachmentQueue] = useState<File[]>([]);
@@ -417,6 +428,8 @@ export default function VaultPage(props: VaultPageProps) {
             return false;
           }
         }
+        if (sidebarFilter.kind === 'organization' && cipher.organizationId !== sidebarFilter.organizationId) return false;
+        if (sidebarFilter.kind === 'collection' && !(cipher.collectionIds || []).includes(sidebarFilter.collectionId)) return false;
       }
       if (!searchQuery) return true;
       return !!meta?.searchText.includes(searchQuery);
@@ -480,6 +493,8 @@ export default function VaultPage(props: VaultPageProps) {
   const sidebarFilterKey = useMemo(() => {
     if (sidebarFilter.kind === 'folder') return `folder:${sidebarFilter.folderId ?? 'none'}`;
     if (sidebarFilter.kind === 'type') return `type:${sidebarFilter.value}`;
+    if (sidebarFilter.kind === 'organization') return `organization:${sidebarFilter.organizationId}`;
+    if (sidebarFilter.kind === 'collection') return `collection:${sidebarFilter.collectionId}`;
     if (sidebarFilter.kind === 'duplicates') return `duplicates:${duplicateMode}`;
     return sidebarFilter.kind;
   }, [sidebarFilter, duplicateMode]);
@@ -563,6 +578,28 @@ export default function VaultPage(props: VaultPageProps) {
   }, [filteredCiphers, filteredCipherIds, selectedCipherId, isCreating, isMobileLayout]);
 
   const selectedCipher = useMemo(() => cipherById.get(selectedCipherId) || null, [cipherById, selectedCipherId]);
+  const canShareItems = useMemo(() => shareableOrganizations(props.organizations).length > 0, [props.organizations]);
+  const managedOrganization = useMemo(
+    () => props.organizations.find((organization) => organization.id === managedOrganizationId) || null,
+    [props.organizations, managedOrganizationId]
+  );
+  const selectedOrganizationLabel = useMemo(() => {
+    const organizationId = selectedCipher?.organizationId;
+    if (!organizationId) return null;
+    const organizationName = props.organizations.find((organization) => organization.id === organizationId)?.name || organizationId;
+    const collectionNames = props.collections
+      .filter((collection) => (selectedCipher.collectionIds || []).includes(collection.id))
+      .map(collectionDisplayName);
+    return collectionNames.length ? `${organizationName} · ${collectionNames.join(', ')}` : organizationName;
+  }, [selectedCipher, props.organizations, props.collections]);
+
+  useEffect(() => {
+    const missingOrganization = sidebarFilter.kind === 'organization'
+      && !props.organizations.some((organization) => organization.id === sidebarFilter.organizationId);
+    const missingCollection = sidebarFilter.kind === 'collection'
+      && !props.collections.some((collection) => collection.id === sidebarFilter.collectionId);
+    if (missingOrganization || missingCollection) setSidebarFilter({ kind: 'all' });
+  }, [sidebarFilter, props.organizations, props.collections]);
   const virtualRange = useMemo(() => {
     if (!filteredCiphers.length) {
       return { start: 0, end: 0, padTop: 0, padBottom: 0 };
@@ -1199,6 +1236,8 @@ const folderName = useCallback((id: string | null | undefined): string => {
     setFolderSortMode(value);
     setFolderSortMenuOpen(false);
   }, []);
+  const handleOpenCreateOrganization = useCallback(() => setCreateOrganizationOpen(true), []);
+  const handleOpenOrganization = useCallback((organization: ProfileOrganization) => setManagedOrganizationId(organization.id), []);
   const handleMobileSidebarMaskClick = useCallback(() => {
     if (!mobileSidebarOpen) return;
     setMobileSidebarOpen(false);
@@ -1230,6 +1269,10 @@ const folderName = useCallback((id: string | null | undefined): string => {
           onOpenDeleteFolder={setPendingDeleteFolder}
           onToggleFolderSortMenu={handleToggleFolderSortMenu}
           onSelectFolderSortMode={handleSelectFolderSortMode}
+          organizations={props.organizations}
+          collections={props.collections}
+          onOpenCreateOrganization={handleOpenCreateOrganization}
+          onOpenOrganization={handleOpenOrganization}
         />
 
         <VaultListPanel
@@ -1358,6 +1401,10 @@ const folderName = useCallback((id: string | null | undefined): string => {
                 onRestore={(cipher) => void handleRestoreSelected(cipher)}
                 onArchive={(cipher) => setPendingArchive(cipher)}
                 onUnarchive={(cipher) => void handleUnarchiveSelected(cipher)}
+                organizationLabel={selectedOrganizationLabel}
+                canShare={canShareItems}
+                onShare={setSharingCipher}
+                onEditCollections={setCollectionsCipher}
               />
             </div>
           )}
@@ -1467,6 +1514,30 @@ const folderName = useCallback((id: string | null | undefined): string => {
         onRepromptPasswordChange={setRepromptPassword}
         onConfirmDeletePasskey={confirmDeleteLoginPasskey}
         onCancelDeletePasskey={() => setPendingDeletePasskeyIndex(null)}
+      />
+
+      <CreateOrganizationDialog
+        open={createOrganizationOpen}
+        onCreate={props.organizationActions.createOrganization}
+        onClose={() => setCreateOrganizationOpen(false)}
+      />
+      <OrganizationManagerDialog
+        organization={managedOrganization}
+        actions={props.organizationActions}
+        onClose={() => setManagedOrganizationId(null)}
+      />
+      <ShareCipherDialog
+        cipher={sharingCipher}
+        organizations={props.organizations}
+        collections={props.collections}
+        onShare={props.organizationActions.shareCipher}
+        onClose={() => setSharingCipher(null)}
+      />
+      <CipherCollectionsDialog
+        cipher={collectionsCipher}
+        collections={props.collections}
+        onSave={props.organizationActions.setCipherCollections}
+        onClose={() => setCollectionsCipher(null)}
       />
     </>
   );

@@ -85,8 +85,10 @@ import {
   createDemoMainRoutesProps,
 } from '@/lib/demo';
 import type { AdminBackupSettings } from '@/lib/api/backup';
-import type { AdminInvite, AdminUser, AppPhase, AuditLogSettings, AuthRequest, AuthorizedDevice, Cipher, CustomEquivalentDomain, DomainRules, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
+import type { AdminInvite, AdminUser, AppPhase, AuditLogSettings, AuthRequest, AuthorizedDevice, Cipher, Collection, CustomEquivalentDomain, DomainRules, Folder as VaultFolder, Profile, Send, SessionState } from '@/lib/types';
 import type { VaultCoreSnapshot } from '@/lib/vault-cache';
+import { decryptOrganizationKeys, type OrganizationKeys } from '@/lib/organization-keys';
+import useOrganizationActions from '@/hooks/useOrganizationActions';
 
 function isBackupProgressDetail(value: unknown): value is BackupProgressDetail {
   if (!value || typeof value !== 'object') return false;
@@ -262,6 +264,10 @@ export default function App() {
   const [decryptedFolders, setDecryptedFolders] = useState<VaultFolder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
+  const [decryptedCollections, setDecryptedCollections] = useState<Collection[]>([]);
+  const [organizationKeys, setOrganizationKeys] = useState<OrganizationKeys>({});
+  const organizationKeysRef = useRef<OrganizationKeys>(organizationKeys);
+  organizationKeysRef.current = organizationKeys;
   const [demoUsers, setDemoUsers] = useState<AdminUser[]>(() => DEMO_ADMIN_USERS.map((user) => ({ ...user })));
   const [demoInvites, setDemoInvites] = useState<AdminInvite[]>(() => DEMO_ADMIN_INVITES.map((invite) => ({ ...invite })));
   const [demoAuthorizedDevices, setDemoAuthorizedDevices] = useState<AuthorizedDevice[]>(() => DEMO_AUTHORIZED_DEVICES.map((device) => ({ ...device })));
@@ -1114,6 +1120,9 @@ export default function App() {
   const encryptedFolders = encryptedVaultCore?.folders;
   const encryptedCiphers = encryptedVaultCore?.ciphers;
   const encryptedSendsFromSync = encryptedVaultCore?.sends;
+  const encryptedCollections = encryptedVaultCore?.collections;
+  const vaultOrganizations = encryptedVaultCore?.organizations;
+  const userPrivateKey = encryptedVaultCore?.userPrivateKey ?? null;
   const sendsQueryKey = useMemo(() => ['sends', vaultCacheKey || session?.email] as const, [vaultCacheKey, session?.email]);
   const sendsQuery = useQuery({
     queryKey: sendsQueryKey,
@@ -1122,6 +1131,10 @@ export default function App() {
     staleTime: 30_000,
   });
   const encryptedSends = sendsQuery.data || encryptedSendsFromSync;
+  async function refreshVaultAfterOrganizationChange() {
+    await invalidateVaultCoreSyncSnapshot(vaultCacheKey);
+    await refetchVaultCoreData();
+  }
   async function refetchSendsFromVaultCore() {
     const result = await refetchVaultCoreData() as { data?: VaultCoreSnapshot };
     const sends = Array.isArray(result.data?.sends) ? result.data.sends : [];
@@ -1328,6 +1341,8 @@ export default function App() {
       setDecryptedFolders([]);
       setDecryptedCiphers([]);
       setDecryptedSends([]);
+      setDecryptedCollections([]);
+      setOrganizationKeys({});
       setVaultInitialDecryptDone(false);
       setVaultDecryptError('');
       setSendsDecryptDone(false);
@@ -1339,39 +1354,41 @@ export default function App() {
     (async () => {
       try {
         setVaultDecryptError('');
+        const nextOrganizationKeys = await decryptOrganizationKeys(vaultOrganizations || [], userPrivateKey, session);
+        const decryptArgs = {
+          folders: encryptedFolders,
+          ciphers: encryptedCiphers,
+          collections: encryptedCollections || [],
+          organizationKeys: nextOrganizationKeys,
+          symEncKeyB64: session.symEncKey!,
+          symMacKeyB64: session.symMacKey!,
+        };
         let result;
         try {
-          result = await decryptVaultCoreInWorker({
-            folders: encryptedFolders,
-            ciphers: encryptedCiphers,
-            symEncKeyB64: session.symEncKey!,
-            symMacKeyB64: session.symMacKey!,
-          });
+          result = await decryptVaultCoreInWorker(decryptArgs);
         } catch {
-          result = await decryptVaultCore({
-            folders: encryptedFolders,
-            ciphers: encryptedCiphers,
-            symEncKeyB64: session.symEncKey!,
-            symMacKeyB64: session.symMacKey!,
-          });
+          result = await decryptVaultCore(decryptArgs);
         }
 
         if (!active) return;
+        setOrganizationKeys(nextOrganizationKeys);
         setDecryptedFolders(result.folders);
         setDecryptedCiphers(result.ciphers);
+        setDecryptedCollections(result.collections);
         setVaultInitialDecryptDone(true);
         if (!session.accessToken) return;
+        const personalCiphers = result.ciphers.filter((cipher) => !cipher.organizationId);
         const repairKey = `${session.accessToken}:${encryptedCiphers.map((cipher) => `${cipher.id}:${cipher.revisionDate || ''}`).join(',')}`;
         if (uriChecksumRepairAttemptRef.current !== repairKey) {
           uriChecksumRepairAttemptRef.current = repairKey;
-          void repairCipherKeyMismatches(authedFetch, session, result.ciphers)
+          void repairCipherKeyMismatches(authedFetch, session, personalCiphers)
             .then(async (keyMismatchCount) => {
               if (keyMismatchCount > 0) {
                 await invalidateVaultCoreSyncSnapshot(vaultCacheKey);
                 void refetchVaultCoreData();
                 return;
               }
-              const uriChecksumCount = await repairCipherUriChecksums(authedFetch, session, result.ciphers);
+              const uriChecksumCount = await repairCipherUriChecksums(authedFetch, session, personalCiphers);
               if (uriChecksumCount > 0) {
                 await invalidateVaultCoreSyncSnapshot(vaultCacheKey);
                 void refetchVaultCoreData();
@@ -1393,7 +1410,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [session?.symEncKey, session?.symMacKey, vaultCacheKey, encryptedFolders, encryptedCiphers]);
+  }, [session?.symEncKey, session?.symMacKey, vaultCacheKey, encryptedFolders, encryptedCiphers, encryptedCollections, vaultOrganizations, userPrivateKey]);
 
   useEffect(() => {
     if (IS_DEMO_MODE) return;
@@ -1469,6 +1486,9 @@ export default function App() {
       ciphers: Array.isArray(snapshot?.ciphers) ? snapshot.ciphers : [],
       folders: Array.isArray(snapshot?.folders) ? snapshot.folders : [],
       sends: Array.isArray(snapshot?.sends) ? snapshot.sends : [],
+      collections: Array.isArray(snapshot?.collections) ? snapshot.collections : [],
+      organizations: Array.isArray(snapshot?.organizations) ? snapshot.organizations : [],
+      userPrivateKey: typeof snapshot?.userPrivateKey === 'string' ? snapshot.userPrivateKey : null,
     };
   }
 
@@ -1591,6 +1611,8 @@ export default function App() {
       const result = await decryptVaultCore({
         folders: [],
         ciphers: [encrypted],
+        collections: [],
+        organizationKeys: organizationKeysRef.current,
         symEncKeyB64: session.symEncKey,
         symMacKeyB64: session.symMacKey,
       });
@@ -1614,6 +1636,8 @@ export default function App() {
       const result = await decryptVaultCore({
         folders: [encrypted],
         ciphers: [],
+        collections: [],
+        organizationKeys: {},
         symEncKeyB64: session.symEncKey,
         symMacKeyB64: session.symMacKey,
       });
@@ -1883,6 +1907,16 @@ export default function App() {
     patchDecryptedFolders: setDecryptedFolders,
     patchDecryptedSends: setDecryptedSends,
     refreshVaultRevisionStamp: refreshVaultCoreRevisionStamp,
+    organizationKeys,
+  });
+  const organizationActions = useOrganizationActions({
+    authedFetch,
+    session,
+    userPrivateKey,
+    organizationKeys,
+    defaultKdfIterations,
+    onNotify: pushToast,
+    refreshVault: refreshVaultAfterOrganizationChange,
   });
   const accountSecurityActions = useAccountSecurityActions({
     authedFetch,
@@ -2033,6 +2067,9 @@ export default function App() {
     decryptedCiphers,
     decryptedFolders,
     decryptedSends,
+    organizations: vaultOrganizations || [],
+    collections: decryptedCollections,
+    organizationActions,
     vaultError: vaultCoreQuery.isError && !encryptedVaultCore ? t('txt_load_vault_failed') : vaultDecryptError,
     ciphersLoading: !(vaultCoreQuery.isError && !encryptedVaultCore) && !vaultDecryptError && !vaultInitialDecryptDone,
     foldersLoading: !(vaultCoreQuery.isError && !encryptedVaultCore) && !vaultDecryptError && !vaultInitialDecryptDone,

@@ -9,6 +9,50 @@
 // - If the new table stores persistent data, update the backup export/import
 //   contract in src/services/backup-archive.ts and backup-import.ts.
 // - Keep statements idempotent; D1 may execute them again on later requests.
+function ciphersTableDdl(createClause: string): string {
+  return `${createClause} (` +
+    'id TEXT PRIMARY KEY, user_id TEXT, organization_id TEXT, type INTEGER NOT NULL, folder_id TEXT, name TEXT, notes TEXT, ' +
+    'favorite INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL, reprompt INTEGER, key TEXT, ' +
+    'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT, deleted_at TEXT, ' +
+    'CHECK ((user_id IS NULL) <> (organization_id IS NULL)), ' +
+    'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, ' +
+    'FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE)';
+}
+
+function attachmentsTableDdl(createClause: string): string {
+  return `${createClause} (` +
+    'id TEXT PRIMARY KEY, cipher_id TEXT NOT NULL, file_name TEXT NOT NULL, size INTEGER NOT NULL, ' +
+    'size_name TEXT NOT NULL, key TEXT, ' +
+    'FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE)';
+}
+
+const PERSONAL_CIPHER_COLUMNS = 'id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at';
+const ATTACHMENT_COLUMNS = 'id, cipher_id, file_name, size, size_name, key';
+
+// Dropping a parent table runs its ON DELETE CASCADE actions, so attachments
+// are parked in a constraint-free copy while ciphers is replaced.
+const CIPHERS_ORGANIZATION_REBUILD_STATEMENTS: readonly string[] = [
+  ciphersTableDdl('CREATE TABLE ciphers_rebuild'),
+  `INSERT INTO ciphers_rebuild (${PERSONAL_CIPHER_COLUMNS}) SELECT ${PERSONAL_CIPHER_COLUMNS} FROM ciphers`,
+  `CREATE TABLE attachments_rebuild AS SELECT ${ATTACHMENT_COLUMNS} FROM attachments`,
+  'DROP TABLE attachments',
+  'DROP TABLE ciphers',
+  'ALTER TABLE ciphers_rebuild RENAME TO ciphers',
+  attachmentsTableDdl('CREATE TABLE attachments'),
+  `INSERT INTO attachments (${ATTACHMENT_COLUMNS}) SELECT ${ATTACHMENT_COLUMNS} FROM attachments_rebuild`,
+  'DROP TABLE attachments_rebuild',
+];
+
+const CIPHER_INDEX_STATEMENTS: readonly string[] = [
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_updated ON ciphers(user_id, updated_at)',
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_archived ON ciphers(user_id, archived_at)',
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted ON ciphers(user_id, deleted_at)',
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted_updated ON ciphers(user_id, deleted_at, updated_at)',
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_folder ON ciphers(user_id, folder_id)',
+  'CREATE INDEX IF NOT EXISTS idx_ciphers_organization ON ciphers(organization_id)',
+  'CREATE INDEX IF NOT EXISTS idx_attachments_cipher ON attachments(cipher_id)',
+];
+
 const SCHEMA_STATEMENTS: readonly string[] = [
   'CREATE TABLE IF NOT EXISTS users (' +
   'id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT, master_password_hint TEXT, master_password_hash TEXT NOT NULL, ' +
@@ -38,28 +82,55 @@ const SCHEMA_STATEMENTS: readonly string[] = [
   'user_id TEXT PRIMARY KEY, revision_date TEXT NOT NULL, ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
 
-  'CREATE TABLE IF NOT EXISTS ciphers (' +
-  'id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type INTEGER NOT NULL, folder_id TEXT, name TEXT, notes TEXT, ' +
-  'favorite INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL, reprompt INTEGER, key TEXT, ' +
-  'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT, deleted_at TEXT, ' +
-  'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
+  'CREATE TABLE IF NOT EXISTS organizations (' +
+  'id TEXT PRIMARY KEY, name TEXT NOT NULL, billing_email TEXT NOT NULL, private_key TEXT, public_key TEXT, ' +
+  'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)',
+
+  'CREATE TABLE IF NOT EXISTS organization_users (' +
+  'id TEXT PRIMARY KEY, user_id TEXT NOT NULL, organization_id TEXT NOT NULL, access_all INTEGER NOT NULL DEFAULT 0, key TEXT, ' +
+  'status INTEGER NOT NULL, type INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+  'UNIQUE (user_id, organization_id), ' +
+  'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, ' +
+  'FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE)',
+  'CREATE INDEX IF NOT EXISTS idx_organization_users_org ON organization_users(organization_id)',
+
+  'CREATE TABLE IF NOT EXISTS collections (' +
+  'id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, external_id TEXT, ' +
+  'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+  'FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE)',
+  'CREATE INDEX IF NOT EXISTS idx_collections_org ON collections(organization_id)',
+
+  'CREATE TABLE IF NOT EXISTS collection_users (' +
+  'user_id TEXT NOT NULL, collection_id TEXT NOT NULL, read_only INTEGER NOT NULL DEFAULT 0, ' +
+  'hide_passwords INTEGER NOT NULL DEFAULT 0, manage INTEGER NOT NULL DEFAULT 0, ' +
+  'PRIMARY KEY (user_id, collection_id), ' +
+  'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, ' +
+  'FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)',
+  'CREATE INDEX IF NOT EXISTS idx_collection_users_collection ON collection_users(collection_id)',
+
+  ciphersTableDdl('CREATE TABLE IF NOT EXISTS ciphers'),
   'ALTER TABLE ciphers ADD COLUMN archived_at TEXT',
-  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_updated ON ciphers(user_id, updated_at)',
-  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_archived ON ciphers(user_id, archived_at)',
-  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted ON ciphers(user_id, deleted_at)',
-  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_deleted_updated ON ciphers(user_id, deleted_at, updated_at)',
-  'CREATE INDEX IF NOT EXISTS idx_ciphers_user_folder ON ciphers(user_id, folder_id)',
+
+  'CREATE TABLE IF NOT EXISTS cipher_collections (' +
+  'cipher_id TEXT NOT NULL, collection_id TEXT NOT NULL, ' +
+  'PRIMARY KEY (cipher_id, collection_id), ' +
+  'FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE, ' +
+  'FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)',
+  'CREATE INDEX IF NOT EXISTS idx_cipher_collections_collection ON cipher_collections(collection_id)',
+
+  'CREATE TABLE IF NOT EXISTS cipher_user_settings (' +
+  'cipher_id TEXT NOT NULL, user_id TEXT NOT NULL, folder_id TEXT, favorite INTEGER NOT NULL DEFAULT 0, ' +
+  'PRIMARY KEY (cipher_id, user_id), ' +
+  'FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE, ' +
+  'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
+  'CREATE INDEX IF NOT EXISTS idx_cipher_user_settings_user ON cipher_user_settings(user_id)',
 
   'CREATE TABLE IF NOT EXISTS folders (' +
   'id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
   'FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)',
   'CREATE INDEX IF NOT EXISTS idx_folders_user_updated ON folders(user_id, updated_at)',
 
-  'CREATE TABLE IF NOT EXISTS attachments (' +
-  'id TEXT PRIMARY KEY, cipher_id TEXT NOT NULL, file_name TEXT NOT NULL, size INTEGER NOT NULL, ' +
-  'size_name TEXT NOT NULL, key TEXT, ' +
-  'FOREIGN KEY (cipher_id) REFERENCES ciphers(id) ON DELETE CASCADE)',
-  'CREATE INDEX IF NOT EXISTS idx_attachments_cipher ON attachments(cipher_id)',
+  attachmentsTableDdl('CREATE TABLE IF NOT EXISTS attachments'),
 
   'CREATE TABLE IF NOT EXISTS sends (' +
   'id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type INTEGER NOT NULL, name TEXT NOT NULL, notes TEXT, data TEXT NOT NULL, ' +
@@ -199,10 +270,24 @@ async function ensureAdminUserExists(db: D1Database): Promise<void> {
     .run();
 }
 
+async function ciphersSupportOrganizations(db: D1Database): Promise<boolean> {
+  const columns = await db.prepare('PRAGMA table_info(ciphers)').all<{ name: string }>();
+  return (columns.results || []).some((column) => column.name === 'organization_id');
+}
+
+async function rebuildCiphersForOrganizations(db: D1Database): Promise<void> {
+  if (await ciphersSupportOrganizations(db)) return;
+  await db.batch(CIPHERS_ORGANIZATION_REBUILD_STATEMENTS.map((statement) => db.prepare(statement)));
+}
+
 export async function ensureStorageSchema(db: D1Database): Promise<void> {
   await db.prepare('PRAGMA foreign_keys = ON').run();
   await db.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
   for (const stmt of SCHEMA_STATEMENTS) {
+    await executeSchemaStatement(db, stmt);
+  }
+  await rebuildCiphersForOrganizations(db);
+  for (const stmt of CIPHER_INDEX_STATEMENTS) {
     await executeSchemaStatement(db, stmt);
   }
   await ensureAdminUserExists(db);

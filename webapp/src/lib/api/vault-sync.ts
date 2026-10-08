@@ -1,22 +1,31 @@
-import type { Cipher, Folder, Send } from '../types';
+import type { Cipher, Collection, Folder, ProfileOrganization, Send } from '../types';
 import { getVaultRevisionDate } from './auth';
 import { clearCachedVaultCoreSnapshot, loadCachedVaultCoreSnapshot, saveCachedVaultCoreSnapshot, type VaultCoreSnapshot } from '../vault-cache';
+import { parseCollection, parseItems, parseProfileOrganization } from './organization-parsers';
 import { parseJson, type AuthedFetch } from './shared';
 
 interface VaultSyncResponse {
   ciphers?: Cipher[];
   folders?: Folder[];
   sends?: Send[];
+  collections?: unknown[];
+  profile?: { privateKey?: unknown; organizations?: unknown[] } | null;
 }
 
 const pendingVaultCoreRequests = new Map<string, Promise<VaultCoreSnapshot>>();
 const memoryVaultCoreCache = new Map<string, { revisionStamp: number; snapshot: VaultCoreSnapshot }>();
 
+const EMPTY_SNAPSHOT: VaultCoreSnapshot = { ciphers: [], folders: [], sends: [], collections: [], organizations: [], userPrivateKey: null };
+
 function normalizeSnapshot(body: VaultSyncResponse | null | undefined): VaultCoreSnapshot {
+  const privateKey = body?.profile?.privateKey;
   return {
     ciphers: Array.isArray(body?.ciphers) ? body!.ciphers! : [],
     folders: Array.isArray(body?.folders) ? body!.folders! : [],
     sends: Array.isArray(body?.sends) ? body!.sends! : [],
+    collections: parseItems<Collection>(body?.collections, parseCollection),
+    organizations: parseItems<ProfileOrganization>(body?.profile?.organizations, parseProfileOrganization),
+    userPrivateKey: typeof privateKey === 'string' && privateKey ? privateKey : null,
   };
 }
 
@@ -25,6 +34,9 @@ function normalizeCachedSnapshot(snapshot: Partial<VaultCoreSnapshot> | null | u
     ciphers: Array.isArray(snapshot?.ciphers) ? snapshot.ciphers : [],
     folders: Array.isArray(snapshot?.folders) ? snapshot.folders : [],
     sends: Array.isArray(snapshot?.sends) ? snapshot.sends : [],
+    collections: Array.isArray(snapshot?.collections) ? snapshot.collections : [],
+    organizations: Array.isArray(snapshot?.organizations) ? snapshot.organizations : [],
+    userPrivateKey: typeof snapshot?.userPrivateKey === 'string' ? snapshot.userPrivateKey : null,
   };
 }
 
@@ -76,7 +88,7 @@ export async function saveVaultCoreSyncSnapshot(
 
 export async function loadVaultCoreSyncSnapshot(authedFetch: AuthedFetch, cacheKey: string): Promise<VaultCoreSnapshot> {
   const normalizedKey = String(cacheKey || '').trim();
-  if (!normalizedKey) return { ciphers: [], folders: [], sends: [] };
+  if (!normalizedKey) return EMPTY_SNAPSHOT;
 
   const existing = pendingVaultCoreRequests.get(normalizedKey);
   if (existing) return existing;

@@ -28,13 +28,20 @@ async function fixture(ctx: TestContext) {
   const sqlite = new DatabaseSync(':memory:');
   ctx.after(async () => { await new Promise((resolve) => setImmediate(resolve)); sqlite.close(); });
   sqlite.exec(`
-    CREATE TABLE ciphers(id TEXT PRIMARY KEY, user_id TEXT, type INTEGER,
+    CREATE TABLE ciphers(id TEXT PRIMARY KEY, user_id TEXT, organization_id TEXT, type INTEGER,
       folder_id TEXT, name TEXT, notes TEXT, favorite INTEGER, data TEXT,
       reprompt INTEGER, key TEXT, created_at TEXT, updated_at TEXT,
       archived_at TEXT, deleted_at TEXT);
     CREATE TABLE attachments(id TEXT PRIMARY KEY, cipher_id TEXT,
       file_name TEXT, size INTEGER, size_name TEXT, key TEXT);
     CREATE TABLE devices(user_id TEXT, push_token TEXT);
+    CREATE TABLE organization_users(id TEXT PRIMARY KEY, user_id TEXT, organization_id TEXT,
+      access_all INTEGER, key TEXT, status INTEGER, type INTEGER, created_at TEXT, updated_at TEXT);
+    CREATE TABLE collections(id TEXT PRIMARY KEY, organization_id TEXT, name TEXT, external_id TEXT,
+      created_at TEXT, updated_at TEXT);
+    CREATE TABLE collection_users(user_id TEXT, collection_id TEXT, read_only INTEGER,
+      hide_passwords INTEGER, manage INTEGER);
+    CREATE TABLE cipher_collections(cipher_id TEXT, collection_id TEXT);
   `);
   const db: any = {
     prepare(sql: string) {
@@ -64,7 +71,7 @@ async function fixture(ctx: TestContext) {
   };
   const storage = new StorageService(db);
   const base: any = {
-    id, userId: owner, type: 1, name: await encrypt('Initial title'),
+    id, userId: owner, organizationId: null, type: 1, name: await encrypt('Initial title'),
     notes: await encrypt('Notes'), favorite: false, folderId: null, key: null,
     login: { username: await encrypt('Username'), password: await encrypt('Password') },
     createdAt: revision, updatedAt: revision, deletedAt: null,
@@ -185,7 +192,7 @@ test('a competing deletion cannot be resurrected by a delayed update', async (ct
   const get = StorageService.prototype.getCipherForUser;
   ctx.mock.method(StorageService.prototype, 'getCipherForUser', async function (this: StorageService, ...args: [string, string]) {
     const result = await get.apply(this, args);
-    await f.storage.deleteCipher(id, owner);
+    await f.storage.deleteCipher(id);
     return result;
   });
   assert.equal((await f.route(`/api/ciphers/${id}`, 'PUT', { name: await encrypt('Delayed title') })).status, 400);
@@ -203,7 +210,7 @@ test('normal legacy saves without a revision still work and nullable fields can 
 test('storage conditional updates cannot change another owner or recreate missing items', async (ctx) => {
   const f = await fixture(ctx);
   assert.equal(await f.storage.updateCipherIfUnchanged({ ...f.base, userId: otherOwner }, revision), false);
-  await f.storage.deleteCipher(id, owner);
+  await f.storage.deleteCipher(id);
   assert.equal(await f.storage.updateCipherIfUnchanged(f.base, revision), false);
   assert.equal(await f.storage.getCipher(id), null);
 });

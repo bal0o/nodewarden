@@ -1,3 +1,4 @@
+import { cipherOwnerOf, type CipherOwner } from '../types';
 import { User, Cipher, Folder, Attachment, Device, Invite, AuditLog, Send, TrustedDeviceTokenSummary, RefreshTokenRecord, CustomEquivalentDomain, AccountPasskeyChallenge, AccountPasskeyChallengeScope, AccountPasskeyCredential, AuthRequestRecord } from '../types';
 import { LIMITS } from '../config/limits';
 import { ensurePushInstallationCredentials } from './push-relay';
@@ -49,7 +50,7 @@ import {
 import {
   bulkArchiveCiphers as archiveStoredCiphers,
   bulkDeleteCiphers as deleteStoredCiphers,
-  bulkMoveCiphers as moveStoredCiphers,
+  bulkMovePersonalCiphers as moveStoredCiphers,
   bulkRestoreCiphers as restoreStoredCiphers,
   bulkSoftDeleteCiphers as softDeleteStoredCiphers,
   bulkUnarchiveCiphers as unarchiveStoredCiphers,
@@ -64,18 +65,14 @@ import {
 } from './storage-cipher-repo';
 import {
   addAttachmentToCipher as attachStoredAttachmentToCipher,
-  addAttachmentToCipherForUser as attachStoredAttachmentToCipherForUser,
   bulkDeleteAttachmentsByIds as deleteStoredAttachmentsByIds,
   deleteAllAttachmentsByCipher as deleteStoredAttachmentsByCipher,
   deleteAttachment as deleteStoredAttachment,
-  deleteAttachmentForUser as deleteStoredAttachmentForUser,
   getAttachment as findStoredAttachment,
-  getAttachmentForUser as findStoredAttachmentForUser,
   getAttachmentsByCipher as listStoredAttachmentsByCipher,
   getAttachmentsByCipherIds as listStoredAttachmentsByCipherIds,
   getAttachmentsByUserId as listStoredAttachmentsByUserId,
   saveAttachment as saveStoredAttachment,
-  updateCipherRevisionDate as updateStoredCipherRevisionDate,
 } from './storage-attachment-repo';
 import {
   bulkDeleteSends as deleteStoredSends,
@@ -166,8 +163,8 @@ const STORAGE_SCHEMA_VERSION_KEY = 'schema.version';
 // Bump this whenever src/services/storage-schema.ts or migrations/0001_init.sql
 // changes. Existing D1 installs only rerun ensureStorageSchema() when this value
 // differs from config.schema.version.
-const STORAGE_SCHEMA_VERSION = '2026-07-13-refresh-session-reuse';
-const REQUIRED_SCHEMA_TABLES = ['webauthn_credentials', 'webauthn_challenges', 'auth_requests', 'totp_login_replays'] as const;
+const STORAGE_SCHEMA_VERSION = '2026-10-08-shared-collections';
+const REQUIRED_SCHEMA_TABLES = ['webauthn_credentials', 'webauthn_challenges', 'auth_requests', 'totp_login_replays', 'organizations', 'organization_users', 'collections', 'collection_users', 'cipher_collections', 'cipher_user_settings'] as const;
 
 // D1-backed storage.
 // Contract:
@@ -497,32 +494,36 @@ export class StorageService {
     await saveStoredCipher(this.db, this.safeBind.bind(this), cipher);
   }
 
-  async updateCipherIfUnchanged(cipher: Cipher, expectedUpdatedAt: string): Promise<boolean> {
-    return updateStoredCipherIfUnchanged(this.db, this.safeBind.bind(this), cipher, expectedUpdatedAt);
+  async updateCipherIfUnchanged(
+    cipher: Cipher,
+    expectedUpdatedAt: string,
+    expectedOwner: CipherOwner = cipherOwnerOf(cipher)
+  ): Promise<boolean> {
+    return updateStoredCipherIfUnchanged(this.db, this.safeBind.bind(this), cipher, expectedUpdatedAt, expectedOwner);
   }
 
-  async deleteCipher(id: string, userId: string): Promise<void> {
-    await deleteStoredCipher(this.db, id, userId);
+  async deleteCipher(id: string): Promise<void> {
+    await deleteStoredCipher(this.db, id);
   }
 
-  async bulkSoftDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
-    return softDeleteStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, userId);
+  async bulkSoftDeleteCiphers(authorizedIds: string[]): Promise<void> {
+    await softDeleteStoredCiphers(this.db, this.sqlChunkSize.bind(this), authorizedIds);
   }
 
-  async bulkRestoreCiphers(ids: string[], userId: string): Promise<string | null> {
-    return restoreStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, userId);
+  async bulkRestoreCiphers(authorizedIds: string[]): Promise<void> {
+    await restoreStoredCiphers(this.db, this.sqlChunkSize.bind(this), authorizedIds);
   }
 
-  async bulkArchiveCiphers(ids: string[], userId: string): Promise<string | null> {
-    return archiveStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, userId);
+  async bulkArchiveCiphers(authorizedIds: string[]): Promise<void> {
+    await archiveStoredCiphers(this.db, this.sqlChunkSize.bind(this), authorizedIds);
   }
 
-  async bulkUnarchiveCiphers(ids: string[], userId: string): Promise<string | null> {
-    return unarchiveStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, userId);
+  async bulkUnarchiveCiphers(authorizedIds: string[]): Promise<void> {
+    await unarchiveStoredCiphers(this.db, this.sqlChunkSize.bind(this), authorizedIds);
   }
 
-  async bulkDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
-    return deleteStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, userId);
+  async bulkDeleteCiphers(authorizedIds: string[]): Promise<void> {
+    await deleteStoredCiphers(this.db, this.sqlChunkSize.bind(this), authorizedIds);
   }
 
   async getAllCiphers(userId: string): Promise<Cipher[]> {
@@ -537,8 +538,8 @@ export class StorageService {
     return listStoredCiphersByIds(this.db, this.sqlChunkSize.bind(this), ids, userId);
   }
 
-  async bulkMoveCiphers(ids: string[], folderId: string | null, userId: string): Promise<string | null> {
-    return moveStoredCiphers(this.db, this.sqlChunkSize.bind(this), this.updateRevisionDate.bind(this), ids, folderId, userId);
+  async bulkMovePersonalCiphers(ids: string[], folderId: string | null, userId: string): Promise<void> {
+    await moveStoredCiphers(this.db, this.sqlChunkSize.bind(this), ids, folderId, userId);
   }
 
   // --- Folders ---
@@ -589,20 +590,12 @@ export class StorageService {
     return findStoredAttachment(this.db, id);
   }
 
-  async getAttachmentForUser(id: string, userId: string): Promise<Attachment | null> {
-    return findStoredAttachmentForUser(this.db, id, userId);
-  }
-
   async saveAttachment(attachment: Attachment): Promise<void> {
     await saveStoredAttachment(this.db, this.safeBind.bind(this), attachment);
   }
 
   async deleteAttachment(id: string): Promise<void> {
     await deleteStoredAttachment(this.db, id);
-  }
-
-  async deleteAttachmentForUser(id: string, userId: string): Promise<void> {
-    await deleteStoredAttachmentForUser(this.db, id, userId);
   }
 
   async bulkDeleteAttachmentsByIds(ids: string[]): Promise<void> {
@@ -625,23 +618,9 @@ export class StorageService {
     await attachStoredAttachmentToCipher(this.db, cipherId, attachmentId);
   }
 
-  async addAttachmentToCipherForUser(cipherId: string, attachmentId: string, userId: string): Promise<void> {
-    await attachStoredAttachmentToCipherForUser(this.db, cipherId, attachmentId, userId);
-  }
-
   async deleteAllAttachmentsByCipher(cipherId: string): Promise<void> {
     await deleteStoredAttachmentsByCipher(this.db, cipherId);
   }
-
-  async updateCipherRevisionDate(cipherId: string): Promise<{ userId: string; revisionDate: string } | null> {
-    return updateStoredCipherRevisionDate(
-      this.getCipher.bind(this),
-      this.saveCipher.bind(this),
-      this.updateRevisionDate.bind(this),
-      cipherId
-    );
-  }
-
   // --- Refresh tokens ---
 
   async saveRefreshToken(

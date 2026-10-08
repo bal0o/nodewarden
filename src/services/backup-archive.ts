@@ -72,6 +72,12 @@ export interface BackupPayload {
     ciphers: SqlRow[];
     attachments: SqlRow[];
     webauthn_credentials?: SqlRow[];
+    organizations?: SqlRow[];
+    organization_users?: SqlRow[];
+    collections?: SqlRow[];
+    collection_users?: SqlRow[];
+    cipher_collections?: SqlRow[];
+    cipher_user_settings?: SqlRow[];
   };
 }
 
@@ -278,6 +284,12 @@ function normalizeParsedBackupDb(value: unknown): BackupPayload['db'] {
     ciphers: source.ciphers as SqlRow[],
     attachments: source.attachments as SqlRow[],
     webauthn_credentials: source.webauthn_credentials as SqlRow[] | undefined,
+    organizations: source.organizations as SqlRow[] | undefined,
+    organization_users: source.organization_users as SqlRow[] | undefined,
+    collections: source.collections as SqlRow[] | undefined,
+    collection_users: source.collection_users as SqlRow[] | undefined,
+    cipher_collections: source.cipher_collections as SqlRow[] | undefined,
+    cipher_user_settings: source.cipher_user_settings as SqlRow[] | undefined,
   };
 }
 
@@ -365,6 +377,62 @@ export function parseBackupArchive(
   };
 }
 
+function rowId(row: SqlRow, column: string): string {
+  return String(row[column] || '').trim();
+}
+
+function collectUniqueIds(rows: SqlRow[], table: string, isValid: (row: SqlRow) => boolean): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const id = rowId(row, 'id');
+    if (!id || !isValid(row)) throw new Error(`Backup archive contains an invalid ${table} row`);
+    if (ids.has(id)) throw new Error(`Backup archive contains duplicate ${table} id: ${id}`);
+    ids.add(id);
+  }
+  return ids;
+}
+
+function validateOrganizationRows(
+  db: BackupPayload['db'],
+  userIds: Set<string>
+): { organizationIds: Set<string>; collectionIds: Set<string> } {
+  const organizationIds = collectUniqueIds(ensureRowArray(db.organizations || [], 'organizations'), 'organization', () => true);
+  collectUniqueIds(
+    ensureRowArray(db.organization_users || [], 'organization_users'),
+    'organization member',
+    (row) => userIds.has(rowId(row, 'user_id')) && organizationIds.has(rowId(row, 'organization_id'))
+  );
+  const collectionIds = collectUniqueIds(
+    ensureRowArray(db.collections || [], 'collections'),
+    'collection',
+    (row) => organizationIds.has(rowId(row, 'organization_id'))
+  );
+  for (const row of ensureRowArray(db.collection_users || [], 'collection_users')) {
+    if (!userIds.has(rowId(row, 'user_id')) || !collectionIds.has(rowId(row, 'collection_id'))) {
+      throw new Error('Backup archive contains an invalid collection access row');
+    }
+  }
+  return { organizationIds, collectionIds };
+}
+
+function validateCipherLinkRows(
+  db: BackupPayload['db'],
+  known: { userIds: Set<string>; folderIds: Set<string>; cipherIds: Set<string>; collectionIds: Set<string> }
+): void {
+  for (const row of ensureRowArray(db.cipher_collections || [], 'cipher_collections')) {
+    if (!known.cipherIds.has(rowId(row, 'cipher_id')) || !known.collectionIds.has(rowId(row, 'collection_id'))) {
+      throw new Error('Backup archive contains an invalid cipher collection row');
+    }
+  }
+  for (const row of ensureRowArray(db.cipher_user_settings || [], 'cipher_user_settings')) {
+    const folderId = rowId(row, 'folder_id');
+    const isValid = known.cipherIds.has(rowId(row, 'cipher_id'))
+      && known.userIds.has(rowId(row, 'user_id'))
+      && (!folderId || known.folderIds.has(folderId));
+    if (!isValid) throw new Error('Backup archive contains an invalid cipher user settings row');
+  }
+}
+
 export interface ValidateBackupPayloadOptions {
   allowExternalAttachmentBlobs?: boolean;
 }
@@ -430,18 +498,24 @@ export function validateBackupPayloadContents(
     folderIds.add(id);
   }
 
+  const { organizationIds, collectionIds } = validateOrganizationRows(payload.db, userIds);
+
   const cipherIds = new Set<string>();
   for (const row of cipherRows) {
     const id = String(row.id || '').trim();
     const userId = String(row.user_id || '').trim();
+    const organizationId = String(row.organization_id || '').trim();
     const folderId = String(row.folder_id || '').trim();
-    if (!id || !userIds.has(userId)) throw new Error('Backup archive contains an invalid cipher row');
+    const hasOneOwner = userId ? !organizationId && userIds.has(userId) : organizationIds.has(organizationId);
+    if (!id || !hasOneOwner) throw new Error('Backup archive contains an invalid cipher row');
     if (folderId && !folderIds.has(folderId)) {
       throw new Error(`Backup archive contains a cipher for an unknown folder: ${folderId}`);
     }
     if (cipherIds.has(id)) throw new Error(`Backup archive contains duplicate cipher id: ${id}`);
     cipherIds.add(id);
   }
+
+  validateCipherLinkRows(payload.db, { userIds, folderIds, cipherIds, collectionIds });
 
   for (const row of attachmentRows) {
     const id = String(row.id || '').trim();
@@ -490,15 +564,36 @@ export async function buildBackupArchive(
     includeAttachments,
   });
   const encoder = new TextEncoder();
-  const [configRows, userRows, domainSettingsRows, revisionRows, folderRows, cipherRows, attachmentRows, accountPasskeyRows] = await Promise.all([
+  const [
+    configRows,
+    userRows,
+    domainSettingsRows,
+    revisionRows,
+    folderRows,
+    cipherRows,
+    attachmentRows,
+    accountPasskeyRows,
+    organizationRows,
+    organizationUserRows,
+    collectionRows,
+    collectionUserRows,
+    cipherCollectionRows,
+    cipherUserSettingRows,
+  ] = await Promise.all([
     queryRows(env.DB, 'SELECT key, value FROM config ORDER BY key ASC'),
     queryRows(env.DB, 'SELECT id, email, name, master_password_hint, master_password_hash, key, private_key, public_key, kdf_type, kdf_iterations, kdf_memory, kdf_parallelism, security_stamp, role, status, verify_devices, totp_secret, totp_recovery_code, yubikey_key1, yubikey_key2, yubikey_key3, yubikey_key4, yubikey_key5, yubikey_nfc, created_at, updated_at FROM users ORDER BY created_at ASC'),
     queryRows(env.DB, 'SELECT user_id, equivalent_domains, custom_equivalent_domains, excluded_global_equivalent_domains, updated_at FROM domain_settings ORDER BY user_id ASC'),
     queryRows(env.DB, 'SELECT user_id, revision_date FROM user_revisions ORDER BY user_id ASC'),
     queryRows(env.DB, 'SELECT id, user_id, name, created_at, updated_at FROM folders ORDER BY created_at ASC'),
-    queryRows(env.DB, 'SELECT id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at FROM ciphers ORDER BY created_at ASC'),
+    queryRows(env.DB, 'SELECT id, user_id, organization_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at FROM ciphers ORDER BY created_at ASC'),
     queryRows(env.DB, 'SELECT id, cipher_id, file_name, size, size_name, key FROM attachments ORDER BY cipher_id ASC, id ASC'),
     queryRows(env.DB, 'SELECT id, user_id, purpose, name, public_key, credential_id, counter, type, aa_guid, transports, encrypted_user_key, encrypted_public_key, encrypted_private_key, supports_prf, created_at, updated_at FROM webauthn_credentials ORDER BY created_at ASC'),
+    queryRows(env.DB, 'SELECT id, name, billing_email, private_key, public_key, created_at, updated_at FROM organizations ORDER BY created_at ASC'),
+    queryRows(env.DB, 'SELECT id, user_id, organization_id, access_all, key, status, type, created_at, updated_at FROM organization_users ORDER BY created_at ASC'),
+    queryRows(env.DB, 'SELECT id, organization_id, name, external_id, created_at, updated_at FROM collections ORDER BY created_at ASC'),
+    queryRows(env.DB, 'SELECT user_id, collection_id, read_only, hide_passwords, manage FROM collection_users ORDER BY collection_id ASC, user_id ASC'),
+    queryRows(env.DB, 'SELECT cipher_id, collection_id FROM cipher_collections ORDER BY cipher_id ASC, collection_id ASC'),
+    queryRows(env.DB, 'SELECT cipher_id, user_id, folder_id, favorite FROM cipher_user_settings ORDER BY cipher_id ASC, user_id ASC'),
   ]);
   const exportedConfigRows = sanitizeConfigRowsForExport(configRows);
   const exportedAttachmentRows = includeAttachments ? attachmentRows : [];
@@ -527,6 +622,12 @@ export async function buildBackupArchive(
       ciphers: cipherRows.length,
       attachments: exportedAttachmentRows.length,
       webauthn_credentials: accountPasskeyRows.length,
+      organizations: organizationRows.length,
+      organization_users: organizationUserRows.length,
+      collections: collectionRows.length,
+      collection_users: collectionUserRows.length,
+      cipher_collections: cipherCollectionRows.length,
+      cipher_user_settings: cipherUserSettingRows.length,
     },
     includes: {
       attachments: includeAttachments,
@@ -550,6 +651,12 @@ export async function buildBackupArchive(
       ciphers: cipherRows,
       attachments: exportedAttachmentRows,
       webauthn_credentials: accountPasskeyRows,
+      organizations: organizationRows,
+      organization_users: organizationUserRows,
+      collections: collectionRows,
+      collection_users: collectionUserRows,
+      cipher_collections: cipherCollectionRows,
+      cipher_user_settings: cipherUserSettingRows,
     }, null, BACKUP_JSON_INDENT)),
   };
 

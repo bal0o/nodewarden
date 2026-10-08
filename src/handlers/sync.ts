@@ -11,6 +11,9 @@ import {
 import { buildDomainsResponse } from '../services/domain-rules';
 import { buildWebAuthnPrfOption } from '../utils/account-passkeys';
 import { buildProfileResponse } from '../utils/profile-response';
+import { OrganizationStore } from '../services/organization-store';
+import { loadOrganizationAccess, resolveCiphersForUser } from '../services/organization-access';
+import { collectionDetailsResponse, loadProfileOrganizations } from './organization-responses';
 
 // CONTRACT:
 // /api/sync reuses cipherToResponse() as the single cipher response shaper.
@@ -77,12 +80,18 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
     return cachedResponse;
   }
 
-  const [ciphers, folders, sends, attachmentsByCipher, domainSettings] = await Promise.all([
+  const organizationStore = new OrganizationStore(env.DB);
+  const [ciphers, folders, sends, domainSettings, organizations, organizationAccess] = await Promise.all([
     storage.getAllCiphers(userId),
     storage.getAllFolders(userId),
     excludeSends ? Promise.resolve([]) : storage.getAllSends(userId),
-    storage.getAttachmentsByUserId(userId),
     excludeDomains ? Promise.resolve(null) : storage.getUserDomainSettings(userId),
+    loadProfileOrganizations(organizationStore, userId),
+    loadOrganizationAccess(organizationStore, userId),
+  ]);
+  const [resolvedCiphers, attachmentsByCipher] = await Promise.all([
+    resolveCiphersForUser(organizationStore, userId, ciphers, organizationAccess),
+    storage.getAttachmentsByCipherIds(ciphers.map((cipher) => cipher.id)),
   ]);
   const webAuthnPrfOptions = accountPasskeys
     .map(buildWebAuthnPrfOption)
@@ -90,15 +99,18 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
   const userDecryptionOptions = buildUserDecryptionOptions(user, webAuthnPrfOptions[0] || null);
   const validFolderIds = new Set(folders.map((folder) => folder.id));
 
-  const profile: ProfileResponse = buildProfileResponse(user, env);
+  const profile: ProfileResponse = buildProfileResponse(user, organizations);
 
   const cipherResponses: CipherResponse[] = [];
-  for (const cipher of ciphers) {
-    const response = cipherToResponse(cipher, attachmentsByCipher.get(cipher.id) || [], { preserveRepairableUris, validFolderIds });
+  for (const { cipher, access } of resolvedCiphers) {
+    const response = cipherToResponse(cipher, attachmentsByCipher.get(cipher.id) || [], { preserveRepairableUris, validFolderIds, access });
     if (isCipherResponseSyncCompatible(response)) {
       cipherResponses.push(response);
     }
   }
+  const collectionResponses = [...organizationAccess.collections.values()].map(({ collection, grant }) =>
+    collectionDetailsResponse(collection, grant)
+  );
 
   const folderResponses: FolderResponse[] = [];
   for (const folder of folders) {
@@ -115,7 +127,7 @@ export async function handleSync(request: Request, env: Env, userId: string): Pr
   const syncResponse: SyncResponse = {
     profile,
     folders: folderResponses,
-    collections: [],
+    collections: collectionResponses,
     ciphers: cipherResponses,
     domains: excludeDomains
       ? null

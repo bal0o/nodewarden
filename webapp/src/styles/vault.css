@@ -133,6 +133,83 @@
   @apply mb-0;
 }
 
+.tree-btn.tree-btn-nested {
+  padding-left: calc(var(--space-2) * 4);
+}
+
+.tree-badge {
+  @apply ml-auto shrink-0;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.dialog-card.organization-dialog {
+  @apply text-left;
+  max-width: none;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+}
+
+.organization-dialog-head {
+  @apply mb-3 flex items-center justify-between gap-3;
+}
+
+.organization-dialog-head .dialog-title {
+  @apply m-0;
+}
+
+.organization-table {
+  @apply w-full;
+  border-collapse: collapse;
+  font-size: var(--font-sm);
+}
+
+.organization-table th,
+.organization-table td {
+  @apply px-2 py-1.5 text-left align-middle;
+  border-bottom: 1px solid var(--line);
+}
+
+.organization-table th {
+  font-weight: 600;
+  color: var(--muted-strong);
+}
+
+.organization-collection-name {
+  @apply inline-flex items-center gap-1.5;
+}
+
+.organization-section {
+  @apply mb-4 flex flex-col gap-2;
+}
+
+.organization-section-head {
+  @apply flex items-center justify-between gap-2;
+}
+
+.organization-inline-form {
+  @apply flex flex-wrap items-center gap-2;
+}
+
+.organization-inline-form .input {
+  @apply w-auto min-w-0 flex-auto;
+}
+
+.organization-inline-form select.input {
+  @apply flex-none;
+}
+
+.organization-check-list {
+  @apply flex flex-col gap-1.5;
+}
+
+.organization-check-row {
+  @apply flex flex-wrap items-center gap-3;
+  font-size: var(--font-sm);
+}
+
 .folder-delete-btn {
   @apply inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0;
   border: none;

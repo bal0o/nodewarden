@@ -13,7 +13,7 @@ import {
 } from 'lucide-preact';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { t } from '@/lib/i18n';
-import type { Cipher, CipherAttachment, CustomFieldType, VaultDraft, VaultDraftField, VaultDraftLoginUri } from '@/lib/types';
+import type { Cipher, CipherAttachment, Collection, CustomFieldType, VaultDraft, VaultDraftField, VaultDraftLoginUri } from '@/lib/types';
 import { firstCipherUri, hostFromUri, websiteIconUrl } from '@/lib/website-utils';
 import { normalizeEquivalentDomain } from '@shared/domain-normalize';
 import WebsiteIcon from './WebsiteIcon';
@@ -28,7 +28,13 @@ export type SidebarFilter =
   | { kind: 'trash' }
   | { kind: 'duplicates' }
   | { kind: 'type'; value: TypeFilter }
-  | { kind: 'folder'; folderId: string | null };
+  | { kind: 'folder'; folderId: string | null }
+  | { kind: 'organization'; organizationId: string }
+  | { kind: 'collection'; collectionId: string };
+
+export function collectionDisplayName(collection: Pick<Collection, 'id' | 'decName'>): string {
+  return collection.decName || collection.id;
+}
 
 interface TypeOption {
   type: number;

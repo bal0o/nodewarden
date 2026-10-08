@@ -1493,6 +1493,107 @@ export async function updateCipher(
   return (await parseJson<Cipher>(resp))!;
 }
 
+const SERVER_COMPUTED_CIPHER_KEYS = ['attachments', 'collectionIds', 'edit', 'viewPassword', 'permissions', 'organizationUseTotp', 'object'];
+
+function stripDecryptedFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripDecryptedFields);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !/^dec[A-Z]/.test(key))
+      .map(([key, item]) => [key, stripDecryptedFields(item)])
+  );
+}
+
+async function decryptFido2Credentials(
+  credentials: Array<Record<string, unknown>> | null | undefined,
+  enc: Uint8Array,
+  mac: Uint8Array
+): Promise<Array<Record<string, unknown>> | null> {
+  if (!Array.isArray(credentials)) return null;
+  const out: Array<Record<string, unknown>> = [];
+  for (const credential of credentials) {
+    const plain: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(credential || {})) {
+      plain[key] = looksLikeCipherString(value) ? await decryptStr(String(value), enc, mac) : value;
+    }
+    out.push(plain);
+  }
+  return out;
+}
+
+async function rewrapAttachmentKeys(
+  cipher: Cipher,
+  from: { enc: Uint8Array; mac: Uint8Array },
+  to: { enc: Uint8Array; mac: Uint8Array }
+): Promise<Record<string, { fileName: string | null; key: string }>> {
+  const rewrapped: Record<string, { fileName: string | null; key: string }> = {};
+  for (const attachment of cipher.attachments || []) {
+    const id = String(attachment.id || '').trim();
+    if (!id) continue;
+    if (!looksLikeCipherString(attachment.key)) throw new Error(t('txt_share_legacy_attachments_unsupported'));
+    const rawKey = await decryptBw(String(attachment.key), from.enc, from.mac);
+    const fileName = attachment.decFileName || (looksLikeCipherString(attachment.fileName) ? await decryptStr(String(attachment.fileName), from.enc, from.mac) : String(attachment.fileName || ''));
+    rewrapped[id] = {
+      fileName: await encryptTextValue(fileName, to.enc, to.mac),
+      key: await encryptBw(rawKey, to.enc, to.mac),
+    };
+  }
+  return rewrapped;
+}
+
+interface KeyBytes {
+  enc: Uint8Array;
+  mac: Uint8Array;
+}
+
+async function buildRekeyedCipherPayload(
+  personalKey: KeyBytes,
+  organizationSession: SessionState,
+  organizationKey: KeyBytes,
+  cipher: Cipher
+): Promise<Record<string, unknown>> {
+  const itemKey = crypto.getRandomValues(new Uint8Array(64));
+  const itemKeys = { enc: itemKey.slice(0, 32), mac: itemKey.slice(32, 64) };
+  const rekeyed: Cipher = {
+    ...cipher,
+    key: await encryptBw(itemKey, organizationKey.enc, organizationKey.mac),
+    login: cipher.login
+      ? { ...cipher.login, fido2Credentials: await decryptFido2Credentials(cipher.login.fido2Credentials as Array<Record<string, unknown>>, personalKey.enc, personalKey.mac) }
+      : cipher.login,
+  };
+  const payload = await buildCipherPayload(organizationSession, draftFromDecryptedCipher(cipher), rekeyed);
+  payload.attachments2 = await rewrapAttachmentKeys(cipher, personalKey, itemKeys);
+  return payload;
+}
+
+async function buildRewrappedCipherPayload(personalKey: KeyBytes, organizationKey: KeyBytes, cipher: Cipher): Promise<Record<string, unknown>> {
+  const itemKey = await decryptBw(String(cipher.key), personalKey.enc, personalKey.mac);
+  const payload = stripDecryptedFields(cipher) as Record<string, unknown>;
+  for (const key of SERVER_COMPUTED_CIPHER_KEYS) delete payload[key];
+  payload.key = await encryptBw(itemKey, organizationKey.enc, organizationKey.mac);
+  payload.lastKnownRevisionDate = cipher.revisionDate;
+  return payload;
+}
+
+export async function buildSharedCipherPayload(
+  session: SessionState,
+  organizationSession: SessionState,
+  cipher: Cipher,
+  organizationId: string
+): Promise<Record<string, unknown>> {
+  if (!session.symEncKey || !session.symMacKey || !organizationSession.symEncKey || !organizationSession.symMacKey) {
+    throw new Error(t('txt_vault_key_unavailable'));
+  }
+  const personalKey = { enc: base64ToBytes(session.symEncKey), mac: base64ToBytes(session.symMacKey) };
+  const organizationKey = { enc: base64ToBytes(organizationSession.symEncKey), mac: base64ToBytes(organizationSession.symMacKey) };
+  const payload = looksLikeCipherString(cipher.key)
+    ? await buildRewrappedCipherPayload(personalKey, organizationKey, cipher)
+    : await buildRekeyedCipherPayload(personalKey, organizationSession, organizationKey, cipher);
+  payload.organizationId = organizationId;
+  return payload;
+}
+
 export async function deleteCipher(authedFetch: AuthedFetch, cipherId: string): Promise<Cipher> {
   const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipherId)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error('Delete item failed');
