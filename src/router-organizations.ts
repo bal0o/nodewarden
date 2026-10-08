@@ -37,6 +37,7 @@ import {
   handleUpdateCollectionUsers,
 } from './handlers/collections';
 import { handleCreateCipher } from './handlers/ciphers';
+import { handleOrganizationCiphersImport } from './handlers/import';
 import { listResponse } from './handlers/organization-responses';
 
 const EMPTY_LIST_SUBPATHS = new Set(['/policies', '/groups', '/groups/details']);
@@ -160,6 +161,7 @@ export async function handleOrganizationRoute(
   if (path === '/api/collections' && method === 'GET') return handleListUserCollections(env, userId);
   if (path === '/api/ciphers/admin' && method === 'POST') return handleCreateCipher(request, env, userId);
   if (path === '/api/ciphers/bulk-collections' && method === 'POST') return handleBulkCipherCollections(request, env, userId);
+  if (path === '/api/ciphers/import-organization' && method === 'POST') return handleOrganizationCiphersImport(request, env, userId);
   if ((path === '/api/ciphers/organization-details' || path === '/api/ciphers/organization-details/assigned') && method === 'GET') {
     return handleOrganizationCipherDetails(request, env, userId);
   }
