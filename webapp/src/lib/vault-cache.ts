@@ -11,6 +11,7 @@ export interface VaultCoreSnapshot {
 
 interface VaultCoreCacheRecord {
   cacheKey: string;
+  formatVersion: number;
   revisionStamp: number;
   savedAt: number;
   snapshot: VaultCoreSnapshot;
@@ -19,6 +20,7 @@ interface VaultCoreCacheRecord {
 const DB_NAME = 'nodewarden-web-cache';
 const DB_VERSION = 1;
 const VAULT_CORE_STORE = 'vault-core';
+const SNAPSHOT_FORMAT_VERSION = 2;
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -100,7 +102,11 @@ export async function loadCachedVaultCoreSnapshot(cacheKey: string): Promise<Vau
     const request = store.get(normalized);
     request.onsuccess = () => {
       const record = request.result as VaultCoreCacheRecord | undefined;
-      resolve(record ? { ...record, snapshot: sanitizeSnapshotForCache(record.snapshot) } : null);
+      if (record?.formatVersion !== SNAPSHOT_FORMAT_VERSION) {
+        resolve(null);
+        return;
+      }
+      resolve({ ...record, snapshot: sanitizeSnapshotForCache(record.snapshot) });
     };
     request.onerror = () => resolve(null);
   }));
@@ -116,6 +122,7 @@ export async function saveCachedVaultCoreSnapshot(
   await withStore('readwrite', (store) => new Promise<void>((resolve) => {
     const record: VaultCoreCacheRecord = {
       cacheKey: normalized,
+      formatVersion: SNAPSHOT_FORMAT_VERSION,
       revisionStamp,
       savedAt: Date.now(),
       snapshot: sanitizeSnapshotForCache(snapshot),
