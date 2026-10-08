@@ -5,7 +5,8 @@ import { ensureStorageSchema } from '../src/services/storage-schema';
 import { StorageService } from '../src/services/storage';
 import { handleAuthenticatedRoute } from '../src/router-authenticated';
 import { isValidEncString } from '../src/handlers/ciphers';
-import { validateBackupPayloadContents, type BackupPayload } from '../src/services/backup-archive';
+import { buildBackupArchive, validateBackupPayloadContents, type BackupPayload } from '../src/services/backup-archive';
+import { importBackupArchiveBytes } from '../src/services/backup-import';
 
 const alice = '00000000-0000-4000-8000-0000000000a1';
 const bob = '00000000-0000-4000-8000-0000000000b0';
@@ -114,7 +115,7 @@ async function fixture(ctx: TestContext) {
     const sync = await json(userId, '/api/sync');
     return sync.ciphers.map((cipher: any) => cipher.id).sort();
   };
-  return { sqlite, storage, route, json, syncCipherIds };
+  return { sqlite, env, storage, route, json, syncCipherIds };
 }
 
 async function organizationWithSharedItem(f: Awaited<ReturnType<typeof fixture>>, bobGrant: { readOnly: boolean; hidePasswords: boolean }) {
@@ -190,6 +191,25 @@ test('backups validate organization ciphers and their links', () => {
     () => validateBackupPayloadContents(backupPayload({ ...organizationBackupRows, collections: [], ciphers: [organizationCipher] }), {}),
     /invalid collection access row/
   );
+});
+
+test('a backup restores organizations, collections and member access for every user', async (ctx) => {
+  const f = await fixture(ctx);
+  const setup = await organizationWithSharedItem(f, { readOnly: true, hidePasswords: true });
+  await confirmAndShare(f, setup);
+  const archive = await buildBackupArchive(f.env, new Date(now), { includeAttachments: false });
+
+  f.sqlite.exec('DELETE FROM cipher_collections; DELETE FROM collection_users; DELETE FROM collections; DELETE FROM organization_users; DELETE FROM organizations; DELETE FROM ciphers;');
+  assert.equal((f.sqlite.prepare('SELECT COUNT(*) AS count FROM collections').get() as any).count, 0);
+
+  await importBackupArchiveBytes(archive.bytes, f.env, alice, true);
+
+  assert.deepEqual(await f.syncCipherIds(alice), [sharedCipherId]);
+  assert.deepEqual(await f.syncCipherIds(carol), [carolCipherId]);
+  const bobSync = await f.json(bob, '/api/sync');
+  assert.equal(bobSync.profile.organizations[0].id, setup.organization.id);
+  assert.deepEqual(bobSync.collections.map((collection: any) => collection.id), [setup.collection.id]);
+  assert.deepEqual(bobSync.ciphers.map((cipher: any) => [cipher.id, cipher.edit, cipher.viewPassword]), [[sharedCipherId, false, false]]);
 });
 
 test('schema rebuild keeps attachments of existing personal ciphers', async (ctx) => {
