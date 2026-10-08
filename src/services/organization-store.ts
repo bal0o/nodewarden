@@ -404,6 +404,14 @@ export class OrganizationStore {
     if (statements.length) await this.db.batch(statements);
   }
 
+  async addCipherCollectionLinks(links: ReadonlyArray<{ cipherId: string; collectionId: string }>): Promise<void> {
+    for (const linkChunk of chunk(links)) {
+      await this.db.batch(linkChunk.map(({ cipherId, collectionId }) =>
+        this.db.prepare('INSERT OR IGNORE INTO cipher_collections(cipher_id, collection_id) VALUES(?, ?)').bind(cipherId, collectionId)
+      ));
+    }
+  }
+
   async removeCiphersFromCollections(cipherIds: readonly string[], collectionIds: readonly string[]): Promise<void> {
     const statements = uniqueIds(cipherIds).flatMap((cipherId) =>
       uniqueIds(collectionIds).map((collectionId) =>

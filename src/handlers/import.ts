@@ -1,11 +1,19 @@
-import { Env, Cipher, Folder, CipherType } from '../types';
+import { Env, Cipher, Collection, Folder, CipherType } from '../types';
 import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
+import { hasFullAccess, isOwnerOrAdmin, loadOrganizationAccess, writableCollectionIds } from '../services/organization-access';
 import { errorResponse, jsonResponse } from '../utils/response';
 import { readActingDeviceIdentifier } from '../utils/device';
 import { generateUUID } from '../utils/uuid';
 import { LIMITS } from '../config/limits';
-import { normalizeCipherLoginForStorage, normalizeCipherSshKeyForCompatibility, validateCipherEncryptedFieldsForCompatibility } from './ciphers';
+import {
+  isValidEncString,
+  normalizeCipherLoginForStorage,
+  normalizeCipherSshKeyForCompatibility,
+  validateCipherEncryptedFieldsForCompatibility,
+} from './ciphers';
+import { publishCiphersSync } from './cipher-events';
+import { loadOrganizationContext, readJsonBody, type OrganizationContext } from './organizations';
 
 // Bitwarden client import request format
 interface CiphersImportRequest {
@@ -108,6 +116,131 @@ async function runBatchInChunks(db: D1Database, statements: D1PreparedStatement[
   }
 }
 
+type ImportedCipher = CiphersImportRequest['ciphers'][number];
+
+interface CipherOwner {
+  userId: string | null;
+  organizationId: string | null;
+}
+
+function buildImportedCipher(c: ImportedCipher, owner: CipherOwner, folderId: string | null, now: string): Cipher {
+  const login = readAliasedImportProp<any | null>(c, ['login', 'Login']);
+  const card = readAliasedImportProp<any | null>(c, ['card', 'Card']);
+  const identity = readAliasedImportProp<any | null>(c, ['identity', 'Identity']);
+  const secureNote = readAliasedImportProp<any | null>(c, ['secureNote', 'SecureNote']);
+  const sshKey = readAliasedImportProp<any | null>(c, ['sshKey', 'SshKey']);
+  const bankAccount = readAliasedImportProp<any | null>(c, ['bankAccount', 'BankAccount']);
+  const driversLicense = readAliasedImportProp<any | null>(c, ['driversLicense', 'DriversLicense']);
+  const passport = readAliasedImportProp<any | null>(c, ['passport', 'Passport']);
+  const fields = readAliasedImportProp<any[] | null>(c, ['fields', 'Fields']);
+  const passwordHistory = readAliasedImportProp<any[] | null>(c, ['passwordHistory', 'PasswordHistory']);
+  const key = readAliasedImportProp<string | null>(c, ['key', 'Key']);
+
+  const cipher: Cipher = {
+    ...c,
+    id: generateUUID(),
+    userId: owner.userId,
+    organizationId: owner.organizationId,
+    type: c.type as CipherType,
+    folderId: folderId,
+    name: c.name ?? 'Untitled',
+    notes: c.notes ?? null,
+    favorite: owner.organizationId ? false : c.favorite ?? false,
+    login: login ? {
+      ...login,
+      username: login.username ?? null,
+      password: login.password ?? null,
+      uris: login.uris?.map((u: any) => ({
+        ...u,
+        uri: u.uri ?? null,
+        uriChecksum: u.uriChecksum ?? null,
+        match: u.match ?? null,
+      })) || null,
+      totp: login.totp ?? null,
+      autofillOnPageLoad: login.autofillOnPageLoad ?? null,
+      fido2Credentials: Array.isArray(login.fido2Credentials) ? login.fido2Credentials : null,
+      uri: login.uri ?? null,
+      passwordRevisionDate: login.passwordRevisionDate ?? null,
+    } : null,
+    card: card ? {
+      ...card,
+      cardholderName: card.cardholderName ?? null,
+      brand: card.brand ?? null,
+      number: card.number ?? null,
+      expMonth: card.expMonth ?? null,
+      expYear: card.expYear ?? null,
+      code: card.code ?? null,
+    } : null,
+    identity: identity ? {
+      ...identity,
+      title: identity.title ?? null,
+      firstName: identity.firstName ?? null,
+      middleName: identity.middleName ?? null,
+      lastName: identity.lastName ?? null,
+      address1: identity.address1 ?? null,
+      address2: identity.address2 ?? null,
+      address3: identity.address3 ?? null,
+      city: identity.city ?? null,
+      state: identity.state ?? null,
+      postalCode: identity.postalCode ?? null,
+      country: identity.country ?? null,
+      company: identity.company ?? null,
+      email: identity.email ?? null,
+      phone: identity.phone ?? null,
+      ssn: identity.ssn ?? null,
+      username: identity.username ?? null,
+      passportNumber: identity.passportNumber ?? null,
+      licenseNumber: identity.licenseNumber ?? null,
+    } : null,
+    secureNote: secureNote ?? null,
+    fields: fields?.map((f: any) => ({
+      ...f,
+      name: f.name ?? null,
+      value: f.value ?? null,
+      type: f.type,
+      linkedId: f.linkedId ?? null,
+    })) || null,
+    passwordHistory: passwordHistory ?? null,
+    reprompt: c.reprompt ?? 0,
+    sshKey: normalizeCipherSshKeyForCompatibility(sshKey ?? null),
+    bankAccount: bankAccount ?? null,
+    driversLicense: driversLicense ?? null,
+    passport: passport ?? null,
+    key: key ?? null,
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
+  };
+  cipher.login = normalizeCipherLoginForStorage(cipher.login);
+  return cipher;
+}
+
+function insertCipherStatement(db: D1Database, cipher: Cipher): D1PreparedStatement {
+  return db
+    .prepare(
+      'INSERT INTO ciphers(id, user_id, organization_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at) ' +
+      'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    .bind(
+      cipher.id,
+      bindNull(cipher.userId),
+      bindNull(cipher.organizationId),
+      Number(cipher.type) || 1,
+      bindNull(cipher.folderId),
+      bindNull(cipher.name),
+      bindNull(cipher.notes),
+      cipher.favorite ? 1 : 0,
+      JSON.stringify(cipher),
+      bindNull(cipher.reprompt ?? 0),
+      bindNull(cipher.key),
+      cipher.createdAt,
+      cipher.updatedAt,
+      bindNull(cipher.archivedAt),
+      bindNull(cipher.deletedAt)
+    );
+}
+
 // POST /api/ciphers/import - Bitwarden client import endpoint
 export async function handleCiphersImport(request: Request, env: Env, userId: string): Promise<Response> {
   const storage = new StorageService(env.DB);
@@ -184,95 +317,7 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
     const folderId = cipherFolderMap.get(i) || (importedFolderId && existingFolderIds.has(importedFolderId) ? importedFolderId : null);
     const sourceIdRaw = String(c?.id ?? '').trim();
     const sourceId = sourceIdRaw || null;
-    const login = readAliasedImportProp<any | null>(c, ['login', 'Login']);
-    const card = readAliasedImportProp<any | null>(c, ['card', 'Card']);
-    const identity = readAliasedImportProp<any | null>(c, ['identity', 'Identity']);
-    const secureNote = readAliasedImportProp<any | null>(c, ['secureNote', 'SecureNote']);
-    const sshKey = readAliasedImportProp<any | null>(c, ['sshKey', 'SshKey']);
-    const bankAccount = readAliasedImportProp<any | null>(c, ['bankAccount', 'BankAccount']);
-    const driversLicense = readAliasedImportProp<any | null>(c, ['driversLicense', 'DriversLicense']);
-    const passport = readAliasedImportProp<any | null>(c, ['passport', 'Passport']);
-    const fields = readAliasedImportProp<any[] | null>(c, ['fields', 'Fields']);
-    const passwordHistory = readAliasedImportProp<any[] | null>(c, ['passwordHistory', 'PasswordHistory']);
-    const key = readAliasedImportProp<string | null>(c, ['key', 'Key']);
-
-    const cipher: Cipher = {
-      ...c,
-      id: generateUUID(),
-      userId: userId,
-      organizationId: null,
-      type: c.type as CipherType,
-      folderId: folderId,
-      name: c.name ?? 'Untitled',
-      notes: c.notes ?? null,
-      favorite: c.favorite ?? false,
-      login: login ? {
-        ...login,
-        username: login.username ?? null,
-        password: login.password ?? null,
-        uris: login.uris?.map((u: any) => ({
-          ...u,
-          uri: u.uri ?? null,
-          uriChecksum: u.uriChecksum ?? null,
-          match: u.match ?? null,
-        })) || null,
-        totp: login.totp ?? null,
-        autofillOnPageLoad: login.autofillOnPageLoad ?? null,
-        fido2Credentials: Array.isArray(login.fido2Credentials) ? login.fido2Credentials : null,
-        uri: login.uri ?? null,
-        passwordRevisionDate: login.passwordRevisionDate ?? null,
-      } : null,
-      card: card ? {
-        ...card,
-        cardholderName: card.cardholderName ?? null,
-        brand: card.brand ?? null,
-        number: card.number ?? null,
-        expMonth: card.expMonth ?? null,
-        expYear: card.expYear ?? null,
-        code: card.code ?? null,
-      } : null,
-      identity: identity ? {
-        ...identity,
-        title: identity.title ?? null,
-        firstName: identity.firstName ?? null,
-        middleName: identity.middleName ?? null,
-        lastName: identity.lastName ?? null,
-        address1: identity.address1 ?? null,
-        address2: identity.address2 ?? null,
-        address3: identity.address3 ?? null,
-        city: identity.city ?? null,
-        state: identity.state ?? null,
-        postalCode: identity.postalCode ?? null,
-        country: identity.country ?? null,
-        company: identity.company ?? null,
-        email: identity.email ?? null,
-        phone: identity.phone ?? null,
-        ssn: identity.ssn ?? null,
-        username: identity.username ?? null,
-        passportNumber: identity.passportNumber ?? null,
-        licenseNumber: identity.licenseNumber ?? null,
-      } : null,
-      secureNote: secureNote ?? null,
-      fields: fields?.map((f: any) => ({
-        ...f,
-        name: f.name ?? null,
-        value: f.value ?? null,
-        type: f.type,
-        linkedId: f.linkedId ?? null,
-      })) || null,
-      passwordHistory: passwordHistory ?? null,
-      reprompt: c.reprompt ?? 0,
-      sshKey: normalizeCipherSshKeyForCompatibility(sshKey ?? null),
-      bankAccount: bankAccount ?? null,
-      driversLicense: driversLicense ?? null,
-      passport: passport ?? null,
-      key: key ?? null,
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-      deletedAt: null,
-    };
-    cipher.login = normalizeCipherLoginForStorage(cipher.login);
+    const cipher = buildImportedCipher(c, { userId, organizationId: null }, folderId, now);
     const compatibilityError = validateCipherEncryptedFieldsForCompatibility(cipher);
     if (compatibilityError) {
       return errorResponse(`Cipher ${i + 1}: ${compatibilityError}`, 400);
@@ -283,33 +328,7 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
   }
 
   if (cipherRows.length > 0) {
-    const cipherStatements = cipherRows.map(cipher => {
-      const data = JSON.stringify(cipher);
-      return env.DB
-        .prepare(
-          'INSERT INTO ciphers(id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at) ' +
-          'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
-          'ON CONFLICT(id) DO UPDATE SET ' +
-          'user_id=excluded.user_id, type=excluded.type, folder_id=excluded.folder_id, name=excluded.name, notes=excluded.notes, favorite=excluded.favorite, data=excluded.data, reprompt=excluded.reprompt, key=excluded.key, updated_at=excluded.updated_at, archived_at=excluded.archived_at, deleted_at=excluded.deleted_at'
-        )
-        .bind(
-          cipher.id,
-          cipher.userId,
-          Number(cipher.type) || 1,
-          bindNull(cipher.folderId),
-          bindNull(cipher.name),
-          bindNull(cipher.notes),
-          cipher.favorite ? 1 : 0,
-          data,
-          bindNull(cipher.reprompt ?? 0),
-          bindNull(cipher.key),
-          cipher.createdAt,
-          cipher.updatedAt,
-          bindNull(cipher.archivedAt),
-          bindNull(cipher.deletedAt)
-        );
-    });
-    await runBatchInChunks(env.DB, cipherStatements, batchChunkSize);
+    await runBatchInChunks(env.DB, cipherRows.map((cipher) => insertCipherStatement(env.DB, cipher)), batchChunkSize);
   }
 
   // Update revision date
@@ -323,5 +342,117 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
     });
   }
 
+  return new Response(null, { status: 200 });
+}
+
+interface OrganizationImportRequest {
+  ciphers?: unknown;
+  collections?: unknown;
+  collectionRelationships?: unknown;
+}
+
+interface ImportedCollection {
+  id?: unknown;
+  name?: unknown;
+  externalId?: unknown;
+}
+
+interface ImportCollectionTargets {
+  collectionIds: string[];
+  newCollections: Collection[];
+}
+
+async function resolveImportCollections(
+  context: OrganizationContext,
+  inputs: readonly ImportedCollection[],
+  now: string
+): Promise<ImportCollectionTargets | Response> {
+  const { actor, organization, store } = context;
+  const existingIds = new Set((await store.getCollectionsForOrganizations([organization.id])).map((collection) => collection.id));
+  const writable = writableCollectionIds(await loadOrganizationAccess(store, actor.userId), organization.id);
+  const targets: ImportCollectionTargets = { collectionIds: [], newCollections: [] };
+  for (const input of inputs) {
+    const id = normalizeOptionalId(input?.id);
+    if (id && existingIds.has(id)) {
+      if (!writable.has(id)) return errorResponse('You do not have permission to import into one or more of these collections', 403);
+      targets.collectionIds.push(id);
+      continue;
+    }
+    if (!hasFullAccess(actor)) return errorResponse('You do not have permission to create collections', 403);
+    if (!isValidEncString(input?.name)) return errorResponse('Collection name must be encrypted', 400);
+    const collection: Collection = {
+      id: generateUUID(),
+      organizationId: organization.id,
+      name: input.name.trim(),
+      externalId: normalizeOptionalId(input.externalId),
+      createdAt: now,
+      updatedAt: now,
+    };
+    targets.newCollections.push(collection);
+    targets.collectionIds.push(collection.id);
+  }
+  return targets;
+}
+
+function readCollectionLinks(input: unknown, cipherCount: number, collectionIds: readonly string[]): Map<number, string[]> | Response {
+  if (input == null) return new Map();
+  if (!Array.isArray(input)) return errorResponse('collectionRelationships must be a list', 400);
+  const links = new Map<number, string[]>();
+  for (const relation of input) {
+    const cipherIndex = Number(relation?.key);
+    const collectionId = collectionIds[Number(relation?.value)];
+    if (!Number.isInteger(cipherIndex) || cipherIndex < 0 || cipherIndex >= cipherCount || !collectionId) {
+      return errorResponse('Invalid collection relationship', 400);
+    }
+    links.set(cipherIndex, [...(links.get(cipherIndex) ?? []), collectionId]);
+  }
+  return links;
+}
+
+function buildOrganizationCiphers(inputs: readonly unknown[], organizationId: string, now: string): Cipher[] | Response {
+  const ciphers: Cipher[] = [];
+  for (let i = 0; i < inputs.length; i++) {
+    const input = inputs[i] && typeof inputs[i] === 'object' ? inputs[i] as ImportedCipher : {} as ImportedCipher;
+    const cipher = buildImportedCipher(input, { userId: null, organizationId }, null, now);
+    const compatibilityError = validateCipherEncryptedFieldsForCompatibility(cipher);
+    if (compatibilityError) return errorResponse(`Cipher ${i + 1}: ${compatibilityError}`, 400);
+    ciphers.push(cipher);
+  }
+  return ciphers;
+}
+
+// POST /api/ciphers/import-organization?organizationId=
+export async function handleOrganizationCiphersImport(request: Request, env: Env, userId: string): Promise<Response> {
+  const organizationId = new URL(request.url).searchParams.get('organizationId') || '';
+  const context = await loadOrganizationContext(env, userId, organizationId, 'confirmed');
+  if (context instanceof Response) return context;
+  const body = await readJsonBody<OrganizationImportRequest>(request);
+  if (body instanceof Response) return body;
+
+  const cipherInputs = Array.isArray(body.ciphers) ? body.ciphers : [];
+  const collectionInputs = Array.isArray(body.collections) ? body.collections as ImportedCollection[] : [];
+  if (cipherInputs.length + collectionInputs.length > LIMITS.performance.importItemLimit) {
+    return errorResponse(`Import exceeds maximum of ${LIMITS.performance.importItemLimit} items`, 400);
+  }
+
+  const now = new Date().toISOString();
+  const targets = await resolveImportCollections(context, collectionInputs, now);
+  if (targets instanceof Response) return targets;
+  const links = readCollectionLinks(body.collectionRelationships, cipherInputs.length, targets.collectionIds);
+  if (links instanceof Response) return links;
+  if (!hasFullAccess(context.actor) && cipherInputs.some((_, index) => !links.has(index))) {
+    return errorResponse('Organization items must be in at least one collection', 400);
+  }
+  const ciphers = buildOrganizationCiphers(cipherInputs, organizationId, now);
+  if (ciphers instanceof Response) return ciphers;
+
+  for (const collection of targets.newCollections) await context.store.createCollection(collection, []);
+  await runBatchInChunks(env.DB, ciphers.map((cipher) => insertCipherStatement(env.DB, cipher)), LIMITS.performance.bulkMoveChunkSize);
+  await context.store.addCipherCollectionLinks(ciphers.flatMap((cipher, index) =>
+    (links.get(index) ?? []).map((collectionId) => ({ cipherId: cipher.id, collectionId }))
+  ));
+
+  const audience = await context.store.getUserIdsWithCollectionAccess(organizationId, targets.collectionIds);
+  await publishCiphersSync(request, env, context.storage, [...new Set([userId, ...audience])]);
   return new Response(null, { status: 200 });
 }

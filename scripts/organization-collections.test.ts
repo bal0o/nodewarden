@@ -100,7 +100,7 @@ async function fixture(ctx: TestContext) {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const user = await storage.getUserById(userId);
-    const response = await handleAuthenticatedRoute(request, env, userId, user as any, path, method);
+    const response = await handleAuthenticatedRoute(request, env, userId, user as any, new URL(request.url).pathname, method);
     assert.ok(response, `${method} ${path} must be handled`);
     return response;
   };
@@ -266,6 +266,58 @@ test('leaving the organization removes shared items from sync', async (ctx) => {
   assert.deepEqual(await f.syncCipherIds(bob), []);
   assert.equal((await f.route(bob, `/api/ciphers/${sharedCipherId}`, 'GET')).status, 404);
   assert.deepEqual((await f.json(bob, '/api/sync')).profile.organizations, []);
+  assert.deepEqual(await f.syncCipherIds(alice), [sharedCipherId]);
+});
+
+function importedLogin(label: string) {
+  return { type: 1, name: symmetric(`${label}-name`), notes: null, favorite: false, login: { username: symmetric(`${label}-user`), password: symmetric(`${label}-password`) } };
+}
+
+test('an organization import creates items in existing and new collections', async (ctx) => {
+  const f = await fixture(ctx);
+  const setup = await organizationWithSharedItem(f, { readOnly: false, hidePasswords: false });
+  await confirmAndShare(f, setup);
+  const organizationId = setup.organization.id;
+
+  await f.json(alice, `/api/ciphers/import-organization?organizationId=${organizationId}`, 'POST', {
+    collections: [{ id: setup.collection.id, name: setup.collection.name }, { name: symmetric('Imported') }],
+    ciphers: [importedLogin('first'), importedLogin('second')],
+    collectionRelationships: [{ key: 0, value: 0 }, { key: 1, value: 1 }],
+  });
+
+  const sync = await f.json(alice, '/api/sync');
+  const imported = sync.ciphers.filter((cipher: any) => cipher.id !== sharedCipherId);
+  assert.equal(imported.length, 2);
+  const importedCollection = sync.collections.find((collection: any) => collection.name === symmetric('Imported'));
+  assert.ok(importedCollection);
+  const byName = new Map(imported.map((cipher: any) => [cipher.name, cipher]));
+  assert.deepEqual((byName.get(symmetric('first-name')) as any).collectionIds, [setup.collection.id]);
+  assert.deepEqual((byName.get(symmetric('second-name')) as any).collectionIds, [importedCollection.id]);
+  assert.ok(imported.every((cipher: any) => cipher.organizationId === organizationId && (cipher.userId ?? null) === null));
+
+  const bobCipherNames = (await f.json(bob, '/api/sync')).ciphers.map((cipher: any) => cipher.name).sort();
+  assert.deepEqual(bobCipherNames, [symmetric(`${sharedCipherId}-name`), symmetric('first-name')].sort());
+});
+
+test('an organization import is refused for read-only collections and new collections from plain users', async (ctx) => {
+  const f = await fixture(ctx);
+  const setup = await organizationWithSharedItem(f, { readOnly: true, hidePasswords: false });
+  await confirmAndShare(f, setup);
+  const path = `/api/ciphers/import-organization?organizationId=${setup.organization.id}`;
+
+  const intoReadOnly = await f.route(bob, path, 'POST', {
+    collections: [{ id: setup.collection.id, name: setup.collection.name }],
+    ciphers: [importedLogin('blocked')],
+    collectionRelationships: [{ key: 0, value: 0 }],
+  });
+  assert.equal(intoReadOnly.status, 403);
+
+  const intoNew = await f.route(bob, path, 'POST', {
+    collections: [{ name: symmetric('Mine') }],
+    ciphers: [importedLogin('blocked')],
+    collectionRelationships: [{ key: 0, value: 0 }],
+  });
+  assert.equal(intoNew.status, 403);
   assert.deepEqual(await f.syncCipherIds(alice), [sharedCipherId]);
 });
 
