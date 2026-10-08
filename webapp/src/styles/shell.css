@@ -23,7 +23,7 @@
 .brand-wordmark {
   @apply block max-w-full;
   width: clamp(168px, 17vw, 224px);
-  aspect-ratio: 862 / 102;
+  aspect-ratio: 1189.55 / 150.39;
   background: #116ff9;
   mask: url('/nodewarden-wordmark.svg') center / contain no-repeat;
   -webkit-mask: url('/nodewarden-wordmark.svg') center / contain no-repeat;
@@ -35,7 +35,7 @@
 }
 
 .brand-logo {
-  @apply h-[42px] w-[53px] object-contain;
+  @apply h-[42px] w-[31px] object-contain;
   filter: drop-shadow(0 10px 22px rgba(43, 102, 217, 0.22));
 }
 
