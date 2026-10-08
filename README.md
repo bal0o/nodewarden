@@ -26,13 +26,13 @@
 
 > **Disclaimer**  
 > This project is for learning and discussion purposes only. Please back up your vault regularly.  
-> This project is not affiliated with Bitwarden. Please do not report NodeWarden issues to the official Bitwarden team.
+> This project is not affiliated with Bitwarden. Please do not report HomeWarden issues to the official Bitwarden team.
 
 ---
 
 ## Feature comparison with the official Bitwarden server
 
-| Feature | Bitwarden Free | NodeWarden | Notes |
+| Feature | Bitwarden Free | HomeWarden | Notes |
 |---|---|---|---|
 | Web vault | ✅ | ✅ | **Original Web Vault UI** |
 | TOTP | ❌ | ✅ | Includes `steam://` support |
@@ -67,7 +67,7 @@
 
 ## Visual quick deploy
 
-1. Fork the NodeWarden repository to your GitHub account
+1. Fork the HomeWarden repository to your GitHub account
 2. Open [Cloudflare Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create)
 3. Choose **Continue with GitHub** and select your fork
 4. Set **build command** to `npm run build` and **deploy command** to `npm run deploy`
@@ -120,8 +120,8 @@
 ## CLI deploy
 
 ```powershell
-git clone https://github.com/shuaiplus/NodeWarden.git
-cd NodeWarden
+git clone https://github.com/bal0o/nodewarden.git
+cd nodewarden
 
 npm install
 npx wrangler login
@@ -148,6 +148,7 @@ LGPL-3.0 License
 
 ## Credits
 
+- [NodeWarden](https://github.com/shuaiplus/NodeWarden) - Upstream project this fork is based on
 - [Bitwarden](https://bitwarden.com/) - Original design and clients
 - [Vaultwarden](https://github.com/dani-garcia/vaultwarden) - Server implementation reference
 - [Cloudflare Workers](https://workers.cloudflare.com/) - Serverless platform

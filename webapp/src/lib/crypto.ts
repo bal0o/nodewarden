@@ -1,5 +1,5 @@
 export const WEB_CRYPTO_UNAVAILABLE_MESSAGE =
-  'Secure browser cryptography is unavailable. Open NodeWarden over HTTPS in a supported browser.';
+  'Secure browser cryptography is unavailable. Open HomeWarden over HTTPS in a supported browser.';
 
 export class WebCryptoUnavailableError extends Error {
   constructor() {

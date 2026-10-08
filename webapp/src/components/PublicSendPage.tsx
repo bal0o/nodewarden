@@ -174,7 +174,7 @@ export default function PublicSendPage(props: PublicSendPageProps) {
     setError('');
     try {
       if (IS_DEMO_MODE) {
-        const bytes = new TextEncoder().encode('NodeWarden demo file Send.\nThis download is generated locally in demo mode.\n');
+        const bytes = new TextEncoder().encode('HomeWarden demo file Send.\nThis download is generated locally in demo mode.\n');
         downloadBytesAsFile(bytes, sendData.decFileName || sendData.file?.fileName || 'nodewarden-demo-send.txt', 'application/octet-stream');
         return;
       }

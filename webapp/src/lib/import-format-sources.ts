@@ -4,7 +4,7 @@ export const IMPORT_SOURCES = [
   { id: 'bitwarden_json', label: 'Bitwarden (json)' },
   { id: 'bitwarden_csv', label: 'Bitwarden (csv)' },
   { id: 'bitwarden_zip', label: 'Bitwarden (zip)' },
-  { id: 'nodewarden_json', label: 'NodeWarden (json)' },
+  { id: 'nodewarden_json', label: 'HomeWarden (json)' },
   { id: 'onepassword_1pux', label: '1Password (1pux/json)' },
   { id: 'onepassword_1pif', label: '1Password (1pif)' },
   { id: 'onepassword_mac_csv', label: '1Password 6 and 7 Mac (csv)' },

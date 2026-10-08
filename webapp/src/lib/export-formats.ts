@@ -13,8 +13,8 @@ export const EXPORT_FORMATS = [
   { id: 'bitwarden_encrypted_json', label: 'Bitwarden (encrypted vault as json)' },
   { id: 'bitwarden_json_zip', label: 'Bitwarden (vault + attachments as zip)' },
   { id: 'bitwarden_encrypted_json_zip', label: 'Bitwarden (encrypted vault + attachments as zip)' },
-  { id: 'nodewarden_json', label: 'NodeWarden (vault + attachments as json)' },
-  { id: 'nodewarden_encrypted_json', label: 'NodeWarden (encrypted vault + attachments as json)' },
+  { id: 'nodewarden_json', label: 'HomeWarden (vault + attachments as json)' },
+  { id: 'nodewarden_encrypted_json', label: 'HomeWarden (encrypted vault + attachments as json)' },
 ] as const;
 
 export type ExportFormatId = (typeof EXPORT_FORMATS)[number]['id'];

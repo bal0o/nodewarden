@@ -93,7 +93,7 @@ function randomBase32Secret(length: number): string {
 }
 
 function buildOtpUri(email: string, secret: string): string {
-  const issuer = 'NodeWarden';
+  const issuer = 'HomeWarden';
   return `otpauth://totp/${encodeURIComponent(`${issuer}:${email}`)}?secret=${encodeURIComponent(secret)}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
 }
 
