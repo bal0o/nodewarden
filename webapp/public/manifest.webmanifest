@@ -1,6 +1,6 @@
 {
-  "name": "NodeWarden",
-  "short_name": "NodeWarden",
+  "name": "HomeWarden",
+  "short_name": "HomeWarden",
   "description": "A lightweight Bitwarden-compatible vault for Cloudflare Workers.",
   "id": "/",
   "start_url": "/vault",

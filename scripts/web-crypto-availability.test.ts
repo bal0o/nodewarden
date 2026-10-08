@@ -73,7 +73,7 @@ test('registration returns an actionable error without contacting the backend', 
 
     assert.deepEqual(result, {
       ok: false,
-      message: 'Secure browser cryptography is unavailable. Open NodeWarden over HTTPS in a supported browser.',
+      message: 'Secure browser cryptography is unavailable. Open HomeWarden over HTTPS in a supported browser.',
     });
     assert.equal(fetchCalled, false);
   } finally {

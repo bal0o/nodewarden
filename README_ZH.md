@@ -26,13 +26,13 @@
 
 > **免责声明**  
 > 本项目仅供学习与交流使用，请定期备份你的密码库。  
-> 本项目与 Bitwarden 官方无关，请不要向 Bitwarden 官方反馈 NodeWarden 的问题。
+> 本项目与 Bitwarden 官方无关，请不要向 Bitwarden 官方反馈 HomeWarden 的问题。
 
 ---
 
 ## 与 Bitwarden 官方服务端能力对比
 
-| 能力 | Bitwarden免费版 | NodeWarden | 说明 |
+| 能力 | Bitwarden免费版 | HomeWarden | 说明 |
 |---|---|---|---|
 | 网页密码库 | ✅ | ✅ | **原创Web Vault界面** |
 | TOTP | ❌ | ✅ | 包括 `steam://` 支持 |
@@ -67,7 +67,7 @@
 
 ## 可视化快速部署
 
-1. Fork NodeWarden 仓库到自己的 GitHub 账号
+1. Fork HomeWarden 仓库到自己的 GitHub 账号
 2. 进入 [Cloudflare Workers & Pages](https://dash.cloudflare.com/?to=/:account/workers-and-pages/create)
 3. 选择 Continue with GitHub 并选择你的仓库
 4. 构建命令填 `npm run build`，部署命令填 `npm run deploy`
@@ -118,8 +118,8 @@
 ## CLI 部署
 
 ```powershell
-git clone https://github.com/shuaiplus/NodeWarden.git
-cd NodeWarden
+git clone https://github.com/bal0o/nodewarden.git
+cd nodewarden
 
 npm install
 npx wrangler login
@@ -146,6 +146,7 @@ LGPL-3.0 License
 
 ## 致谢
 
+- [NodeWarden](https://github.com/shuaiplus/NodeWarden) - 本分支所基于的上游项目
 - [Bitwarden](https://bitwarden.com/) - 原始设计与客户端
 - [Vaultwarden](https://github.com/dani-garcia/vaultwarden) - 服务端实现参考
 - [Cloudflare Workers](https://workers.cloudflare.com/) - 无服务器平台
