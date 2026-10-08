@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./NodeWarden.svg" alt="NodeWarden Logo" />
+  <img src="./NodeWarden.svg" alt="HomeWarden" />
 </p>
 
 <p align="center">

@@ -12,8 +12,8 @@ export default function NotFoundPage(props: NotFoundPageProps) {
     <main className="not-found-page">
       <section className="not-found-shell" aria-labelledby="not-found-title">
         <div className="not-found-brand">
-          <img src="/nodewarden-logo.svg" alt="NodeWarden logo" className="not-found-logo" />
-          <span className="not-found-wordmark" aria-label="NodeWarden" role="img" />
+          <img src="/nodewarden-logo.svg" alt="HomeWarden logo" className="not-found-logo" />
+          <span className="not-found-wordmark" aria-label="HomeWarden" role="img" />
         </div>
         <div className="not-found-copy">
           <div className="not-found-code">404</div>

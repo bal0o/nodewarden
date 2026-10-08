@@ -76,7 +76,7 @@
   }
 
   .standalone-brand-logo {
-    @apply h-11 w-[55px];
+    @apply h-11 w-8;
   }
 
   .auth-card {
@@ -114,7 +114,7 @@
   }
 
   .brand-logo {
-    @apply h-[34px] w-[43px];
+    @apply h-[34px] w-[25px];
   }
 
   .brand-wordmark {
