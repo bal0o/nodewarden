@@ -1,4 +1,4 @@
-import type { Cipher } from '../types';
+import type { Cipher, CipherOwner } from '../types';
 
 function normalizeOptionalId(value: unknown): string | null {
   if (value == null) return null;
@@ -8,11 +8,11 @@ function normalizeOptionalId(value: unknown): string | null {
 
 type SafeBind = (stmt: D1PreparedStatement, ...values: any[]) => D1PreparedStatement;
 type SqlChunkSize = (fixedBindCount: number) => number;
-type UpdateRevisionDate = (userId: string) => Promise<string>;
 
 interface CipherRow {
   id: string;
-  user_id: string;
+  user_id: string | null;
+  organization_id: string | null;
   type: number | null;
   folder_id: string | null;
   name: string | null;
@@ -31,6 +31,13 @@ const CIPHER_SCALAR_DATA_KEYS = new Set([
   'id',
   'userId',
   'user_id',
+  'organizationId',
+  'organization_id',
+  'organizationUseTotp',
+  'collectionIds',
+  'edit',
+  'viewPassword',
+  'permissions',
   'type',
   'folderId',
   'folder_id',
@@ -59,6 +66,31 @@ const CIPHER_SCALAR_DATA_KEYS = new Set([
   'deletedDate',
 ]);
 
+const VISIBLE_TO_USER_SQL = `(
+  ciphers.user_id = ?
+  OR ciphers.organization_id IN (
+    SELECT full_member.organization_id FROM organization_users full_member
+    WHERE full_member.user_id = ? AND full_member.status = 2
+      AND (full_member.access_all = 1 OR full_member.type IN (0, 1))
+  )
+  OR EXISTS (
+    SELECT 1 FROM cipher_collections linked
+    JOIN collections linked_collection ON linked_collection.id = linked.collection_id
+    JOIN collection_users granted ON granted.collection_id = linked.collection_id
+    JOIN organization_users grant_member
+      ON grant_member.organization_id = linked_collection.organization_id
+     AND grant_member.user_id = granted.user_id
+     AND grant_member.status = 2
+    WHERE linked.cipher_id = ciphers.id
+      AND linked_collection.organization_id = ciphers.organization_id
+      AND granted.user_id = ?
+  )
+)`;
+
+function visibleToUserBinds(userId: string): string[] {
+  return [userId, userId, userId];
+}
+
 function buildCipherData(cipher: Cipher, folderId: string | null): string {
   const payload: Record<string, unknown> = {
     ...cipher,
@@ -79,6 +111,7 @@ function parseCipherRow(row: CipherRow | null | undefined): Cipher | null {
       ...parsed,
       id: row.id,
       userId: row.user_id,
+      organizationId: row.organization_id,
       type: Number(row.type) || Number(parsed.type) || 1,
       folderId,
       name: row.name ?? parsed.name ?? null,
@@ -97,8 +130,15 @@ function parseCipherRow(row: CipherRow | null | undefined): Cipher | null {
   }
 }
 
+function parseCipherRows(rows: CipherRow[] | undefined): Cipher[] {
+  return (rows || []).flatMap((row) => {
+    const cipher = parseCipherRow(row);
+    return cipher ? [cipher] : [];
+  });
+}
+
 function selectCipherColumns(): string {
-  return 'id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at';
+  return 'id, user_id, organization_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at';
 }
 
 export async function getCipher(db: D1Database, id: string): Promise<Cipher | null> {
@@ -111,8 +151,8 @@ export async function getCipher(db: D1Database, id: string): Promise<Cipher | nu
 
 export async function getCipherForUser(db: D1Database, id: string, userId: string): Promise<Cipher | null> {
   const row = await db
-    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE id = ? AND user_id = ?`)
-    .bind(id, userId)
+    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE id = ? AND ${VISIBLE_TO_USER_SQL}`)
+    .bind(id, ...visibleToUserBinds(userId))
     .first<CipherRow>();
   return parseCipherRow(row);
 }
@@ -121,16 +161,17 @@ export async function saveCipher(db: D1Database, safeBind: SafeBind, cipher: Cip
   const folderId = normalizeOptionalId(cipher.folderId);
   const data = buildCipherData(cipher, folderId);
   const stmt = db.prepare(
-    'INSERT INTO ciphers(id, user_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at) ' +
-    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO ciphers(id, user_id, organization_id, type, folder_id, name, notes, favorite, data, reprompt, key, created_at, updated_at, archived_at, deleted_at) ' +
+    'VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
     'ON CONFLICT(id) DO UPDATE SET ' +
     'type=excluded.type, folder_id=excluded.folder_id, name=excluded.name, notes=excluded.notes, favorite=excluded.favorite, data=excluded.data, reprompt=excluded.reprompt, key=excluded.key, updated_at=excluded.updated_at, archived_at=excluded.archived_at, deleted_at=excluded.deleted_at ' +
-    'WHERE user_id=excluded.user_id'
+    'WHERE ciphers.user_id IS excluded.user_id AND ciphers.organization_id IS excluded.organization_id'
   );
   await safeBind(
     stmt,
     cipher.id,
     cipher.userId,
+    cipher.organizationId,
     Number(cipher.type) || 1,
     folderId,
     cipher.name,
@@ -152,17 +193,20 @@ export async function updateCipherIfUnchanged(
   db: D1Database,
   safeBind: SafeBind,
   cipher: Cipher,
-  expectedUpdatedAt: string
+  expectedUpdatedAt: string,
+  expectedOwner: CipherOwner
 ): Promise<boolean> {
   const folderId = normalizeOptionalId(cipher.folderId);
   const result = await safeBind(
     db.prepare(
-      'UPDATE ciphers SET type=?, folder_id=?, name=?, notes=?, favorite=?, data=?, reprompt=?, key=?, updated_at=?, archived_at=?, deleted_at=? ' +
-      'WHERE id=? AND user_id=? AND updated_at=?'
+      'UPDATE ciphers SET user_id=?, organization_id=?, type=?, folder_id=?, name=?, notes=?, favorite=?, data=?, reprompt=?, key=?, updated_at=?, archived_at=?, deleted_at=? ' +
+      'WHERE id=? AND user_id IS ? AND organization_id IS ? AND updated_at=?'
     ),
+    cipher.userId, cipher.organizationId,
     Number(cipher.type) || 1, folderId, cipher.name, cipher.notes, cipher.favorite ? 1 : 0,
     buildCipherData(cipher, folderId), cipher.reprompt ?? 0, cipher.key, cipher.updatedAt,
-    cipher.archivedAt ?? null, cipher.deletedAt, cipher.id, cipher.userId, expectedUpdatedAt
+    cipher.archivedAt ?? null, cipher.deletedAt, cipher.id,
+    expectedOwner.userId, expectedOwner.organizationId, expectedUpdatedAt
   ).run();
   return result.meta.changes === 1;
 }
@@ -171,102 +215,92 @@ function sanitizeIds(ids: string[]): string[] {
   return Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
 }
 
-export async function deleteCipher(db: D1Database, id: string, userId: string): Promise<void> {
-  await db.prepare('DELETE FROM ciphers WHERE id = ? AND user_id = ?').bind(id, userId).run();
+async function runForIdChunks(
+  sqlChunkSize: SqlChunkSize,
+  fixedBindCount: number,
+  ids: string[],
+  run: (chunk: string[], placeholders: string) => Promise<unknown>
+): Promise<void> {
+  const uniqueIds = sanitizeIds(ids);
+  const chunkSize = sqlChunkSize(fixedBindCount);
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    await run(chunk, chunk.map(() => '?').join(','));
+  }
 }
 
-export async function bulkSoftDeleteCiphers(
-  db: D1Database,
-  sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
-  ids: string[],
-  userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return null;
+export async function deleteCipher(db: D1Database, id: string): Promise<void> {
+  await db.prepare('DELETE FROM ciphers WHERE id = ?').bind(id).run();
+}
 
+export async function bulkSoftDeleteCiphers(db: D1Database, sqlChunkSize: SqlChunkSize, ids: string[]): Promise<void> {
   const now = new Date().toISOString();
-  const chunkSize = sqlChunkSize(3);
-
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db
-      .prepare(
-        `UPDATE ciphers
-         SET deleted_at = ?, updated_at = ?,
-             data = json_remove(data, '$.deletedAt', '$.deletedDate', '$.updatedAt', '$.revisionDate')
-         WHERE user_id = ? AND id IN (${placeholders})`
-      )
-      .bind(now, now, userId, ...chunk)
-      .run();
-  }
-
-  return updateRevisionDate(userId);
+  await runForIdChunks(sqlChunkSize, 2, ids, (chunk, placeholders) => db
+    .prepare(
+      `UPDATE ciphers
+       SET deleted_at = ?, updated_at = ?,
+           data = json_remove(data, '$.deletedAt', '$.deletedDate', '$.updatedAt', '$.revisionDate')
+       WHERE id IN (${placeholders})`
+    )
+    .bind(now, now, ...chunk)
+    .run());
 }
 
-export async function bulkRestoreCiphers(
-  db: D1Database,
-  sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
-  ids: string[],
-  userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return null;
-
+export async function bulkRestoreCiphers(db: D1Database, sqlChunkSize: SqlChunkSize, ids: string[]): Promise<void> {
   const now = new Date().toISOString();
-  const chunkSize = sqlChunkSize(2);
-
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db
-      .prepare(
-        `UPDATE ciphers
-         SET deleted_at = NULL, updated_at = ?,
-             data = json_remove(data, '$.deletedAt', '$.deletedDate', '$.updatedAt', '$.revisionDate')
-         WHERE user_id = ? AND id IN (${placeholders})`
-      )
-      .bind(now, userId, ...chunk)
-      .run();
-  }
-
-  return updateRevisionDate(userId);
+  await runForIdChunks(sqlChunkSize, 1, ids, (chunk, placeholders) => db
+    .prepare(
+      `UPDATE ciphers
+       SET deleted_at = NULL, updated_at = ?,
+           data = json_remove(data, '$.deletedAt', '$.deletedDate', '$.updatedAt', '$.revisionDate')
+       WHERE id IN (${placeholders})`
+    )
+    .bind(now, ...chunk)
+    .run());
 }
 
-export async function bulkDeleteCiphers(
-  db: D1Database,
-  sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
-  ids: string[],
-  userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return null;
+export async function bulkDeleteCiphers(db: D1Database, sqlChunkSize: SqlChunkSize, ids: string[]): Promise<void> {
+  await runForIdChunks(sqlChunkSize, 0, ids, (chunk, placeholders) => db
+    .prepare(`DELETE FROM ciphers WHERE id IN (${placeholders})`)
+    .bind(...chunk)
+    .run());
+}
 
-  const chunkSize = sqlChunkSize(1);
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db.prepare(`DELETE FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`).bind(userId, ...chunk).run();
-  }
+export async function bulkArchiveCiphers(db: D1Database, sqlChunkSize: SqlChunkSize, ids: string[]): Promise<void> {
+  const now = new Date().toISOString();
+  await runForIdChunks(sqlChunkSize, 2, ids, (chunk, placeholders) => db
+    .prepare(
+      `UPDATE ciphers
+       SET archived_at = ?, updated_at = ?,
+           data = json_remove(data, '$.archivedAt', '$.archivedDate', '$.updatedAt', '$.revisionDate')
+       WHERE id IN (${placeholders})
+         AND deleted_at IS NULL
+         AND json_extract(data, '$.deletedAt') IS NULL
+         AND json_extract(data, '$.deletedDate') IS NULL`
+    )
+    .bind(now, now, ...chunk)
+    .run());
+}
 
-  return updateRevisionDate(userId);
+export async function bulkUnarchiveCiphers(db: D1Database, sqlChunkSize: SqlChunkSize, ids: string[]): Promise<void> {
+  const now = new Date().toISOString();
+  await runForIdChunks(sqlChunkSize, 1, ids, (chunk, placeholders) => db
+    .prepare(
+      `UPDATE ciphers
+       SET archived_at = NULL, updated_at = ?,
+           data = json_remove(data, '$.archivedAt', '$.archivedDate', '$.updatedAt', '$.revisionDate')
+       WHERE id IN (${placeholders})`
+    )
+    .bind(now, ...chunk)
+    .run());
 }
 
 export async function getAllCiphers(db: D1Database, userId: string): Promise<Cipher[]> {
   const res = await db
-    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE user_id = ? ORDER BY updated_at DESC`)
-    .bind(userId)
+    .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE ${VISIBLE_TO_USER_SQL} ORDER BY updated_at DESC`)
+    .bind(...visibleToUserBinds(userId))
     .all<CipherRow>();
-  return (res.results || []).flatMap((row) => {
-    const cipher = parseCipherRow(row);
-    return cipher ? [cipher] : [];
-  });
+  return parseCipherRows(res.results);
 }
 
 export async function getCiphersPage(
@@ -282,17 +316,14 @@ export async function getCiphersPage(
   const res = await db
     .prepare(
       `SELECT ${selectCipherColumns()} FROM ciphers
-       WHERE user_id = ?
+       WHERE ${VISIBLE_TO_USER_SQL}
        ${whereDeleted}
        ORDER BY updated_at DESC
        LIMIT ? OFFSET ?`
     )
-    .bind(userId, limit, offset)
+    .bind(...visibleToUserBinds(userId), limit, offset)
     .all<CipherRow>();
-  return (res.results || []).flatMap((row) => {
-    const cipher = parseCipherRow(row);
-    return cipher ? [cipher] : [];
-  });
+  return parseCipherRows(res.results);
 }
 
 export async function getCiphersByIds(
@@ -301,119 +332,34 @@ export async function getCiphersByIds(
   ids: string[],
   userId: string
 ): Promise<Cipher[]> {
-  if (ids.length === 0) return [];
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return [];
-
-  const chunkSize = sqlChunkSize(1);
   const out: Cipher[] = [];
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    const stmt = db.prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
-    const res = await stmt.bind(userId, ...chunk).all<CipherRow>();
-    out.push(
-      ...(res.results || []).flatMap((row) => {
-        const cipher = parseCipherRow(row);
-        return cipher ? [cipher] : [];
-      })
-    );
-  }
+  const binds = visibleToUserBinds(userId);
+  await runForIdChunks(sqlChunkSize, binds.length, ids, async (chunk, placeholders) => {
+    const res = await db
+      .prepare(`SELECT ${selectCipherColumns()} FROM ciphers WHERE id IN (${placeholders}) AND ${VISIBLE_TO_USER_SQL}`)
+      .bind(...chunk, ...binds)
+      .all<CipherRow>();
+    out.push(...parseCipherRows(res.results));
+  });
   return out;
 }
 
-export async function bulkMoveCiphers(
+export async function bulkMovePersonalCiphers(
   db: D1Database,
   sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
   ids: string[],
   folderId: string | null,
   userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
+): Promise<void> {
   const now = new Date().toISOString();
   const normalizedFolderId = normalizeOptionalId(folderId);
-  const uniqueIds = sanitizeIds(ids);
-  const chunkSize = sqlChunkSize(3);
-
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db
-      .prepare(
-        `UPDATE ciphers
-         SET folder_id = ?, updated_at = ?,
-             data = json_remove(data, '$.folderId', '$.folder_id', '$.updatedAt', '$.revisionDate')
-         WHERE user_id = ? AND id IN (${placeholders})`
-      )
-      .bind(normalizedFolderId, now, userId, ...chunk)
-      .run();
-  }
-
-  return updateRevisionDate(userId);
-}
-
-export async function bulkArchiveCiphers(
-  db: D1Database,
-  sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
-  ids: string[],
-  userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return null;
-
-  const now = new Date().toISOString();
-  const chunkSize = sqlChunkSize(3);
-
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db
-      .prepare(
-        `UPDATE ciphers
-         SET archived_at = ?, updated_at = ?,
-             data = json_remove(data, '$.archivedAt', '$.archivedDate', '$.updatedAt', '$.revisionDate')
-         WHERE user_id = ? AND id IN (${placeholders})
-           AND deleted_at IS NULL
-           AND json_extract(data, '$.deletedAt') IS NULL
-           AND json_extract(data, '$.deletedDate') IS NULL`
-      )
-      .bind(now, now, userId, ...chunk)
-      .run();
-  }
-
-  return updateRevisionDate(userId);
-}
-
-export async function bulkUnarchiveCiphers(
-  db: D1Database,
-  sqlChunkSize: SqlChunkSize,
-  updateRevisionDate: UpdateRevisionDate,
-  ids: string[],
-  userId: string
-): Promise<string | null> {
-  if (ids.length === 0) return null;
-  const uniqueIds = sanitizeIds(ids);
-  if (!uniqueIds.length) return null;
-
-  const now = new Date().toISOString();
-  const chunkSize = sqlChunkSize(2);
-
-  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
-    const chunk = uniqueIds.slice(i, i + chunkSize);
-    const placeholders = chunk.map(() => '?').join(',');
-    await db
-      .prepare(
-        `UPDATE ciphers
-         SET archived_at = NULL, updated_at = ?,
-             data = json_remove(data, '$.archivedAt', '$.archivedDate', '$.updatedAt', '$.revisionDate')
-         WHERE user_id = ? AND id IN (${placeholders})`
-      )
-      .bind(now, userId, ...chunk)
-      .run();
-  }
-
-  return updateRevisionDate(userId);
+  await runForIdChunks(sqlChunkSize, 3, ids, (chunk, placeholders) => db
+    .prepare(
+      `UPDATE ciphers
+       SET folder_id = ?, updated_at = ?,
+           data = json_remove(data, '$.folderId', '$.folder_id', '$.updatedAt', '$.revisionDate')
+       WHERE user_id = ? AND id IN (${placeholders})`
+    )
+    .bind(normalizedFolderId, now, userId, ...chunk)
+    .run());
 }

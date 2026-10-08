@@ -8,7 +8,8 @@ import type { AdminBackupImportResponse, AdminBackupRunResponse, AdminBackupSett
 import type { AuditLogFilters } from '@/lib/api/admin';
 import type { CiphersImportPayload } from '@/lib/api/vault';
 import { t } from '@/lib/i18n';
-import type { AccountPasskeyCredential, AdminInvite, AdminUser, AuditLogListResult, AuditLogSettings, AuthRequest, AuthorizedDevice, Cipher, CustomEquivalentDomain, DomainRules, Folder as VaultFolder, Profile, Send, SendDraft, SessionState, TwoFactorPasskeySettings, VaultDraft, YubiKeyOtpSettings } from '@/lib/types';
+import type { OrganizationActions } from '@/hooks/useOrganizationActions';
+import type { AccountPasskeyCredential, AdminInvite, AdminUser, AuditLogListResult, AuditLogSettings, AuthRequest, AuthorizedDevice, Cipher, Collection, ProfileOrganization, CustomEquivalentDomain, DomainRules, Folder as VaultFolder, Profile, Send, SendDraft, SessionState, TwoFactorPasskeySettings, VaultDraft, YubiKeyOtpSettings } from '@/lib/types';
 import type { ExportRequest } from '@/lib/export-formats';
 
 const VaultPage = lazy(() => import('@/components/VaultPage'));
@@ -48,6 +49,9 @@ export interface AppMainRoutesProps {
   decryptedCiphers: Cipher[];
   decryptedFolders: VaultFolder[];
   decryptedSends: Send[];
+  organizations: ProfileOrganization[];
+  collections: Collection[];
+  organizationActions: OrganizationActions;
   vaultError: string;
   ciphersLoading: boolean;
   foldersLoading: boolean;
@@ -256,6 +260,9 @@ export default function AppMainRoutes(props: AppMainRoutesProps) {
           <VaultPage
             ciphers={props.decryptedCiphers}
             folders={props.decryptedFolders}
+            organizations={props.organizations}
+            collections={props.collections}
+            organizationActions={props.organizationActions}
             loading={props.ciphersLoading || props.foldersLoading}
             error={props.vaultError}
             emailForReprompt={props.profile?.email || props.session?.email || ''}

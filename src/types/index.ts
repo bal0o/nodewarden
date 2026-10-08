@@ -245,7 +245,8 @@ export interface PasswordHistory {
 
 export interface Cipher {
   id: string;
-  userId: string;
+  userId: string | null;
+  organizationId: string | null;
   type: CipherType;
   folderId: string | null;
   name: string | null;
@@ -269,6 +270,76 @@ export interface Cipher {
   deletedAt: string | null;
   /** Allow unknown fields from Bitwarden clients to be stored and passed through transparently. */
   [key: string]: any;
+}
+
+export type CipherOwner =
+  | { userId: string; organizationId: null }
+  | { userId: null; organizationId: string };
+
+export function cipherOwnerOf(cipher: Cipher): CipherOwner {
+  if (cipher.organizationId) return { userId: null, organizationId: cipher.organizationId };
+  if (cipher.userId) return { userId: cipher.userId, organizationId: null };
+  throw new Error(`Cipher ${cipher.id} has no owner`);
+}
+
+export interface Organization {
+  id: string;
+  name: string;
+  billingEmail: string;
+  privateKey: string | null;
+  publicKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export enum MembershipStatus {
+  Invited = 0,
+  Accepted = 1,
+  Confirmed = 2,
+}
+
+export enum MembershipType {
+  Owner = 0,
+  Admin = 1,
+  User = 2,
+  Manager = 3,
+}
+
+export interface OrganizationMember {
+  id: string;
+  userId: string;
+  organizationId: string;
+  accessAll: boolean;
+  key: string | null;
+  status: MembershipStatus;
+  type: MembershipType;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Collection {
+  id: string;
+  organizationId: string;
+  name: string;
+  externalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionGrant {
+  readOnly: boolean;
+  hidePasswords: boolean;
+  manage: boolean;
+}
+
+export interface CollectionUser extends CollectionGrant {
+  userId: string;
+  collectionId: string;
+}
+
+export interface CipherUserSettings {
+  folderId: string | null;
+  favorite: boolean;
 }
 
 // Folder model

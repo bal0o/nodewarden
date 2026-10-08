@@ -24,8 +24,9 @@ import {
   X,
 } from 'lucide-preact';
 import { Link } from 'wouter';
-import type { Folder } from '@/lib/types';
+import type { Collection, Folder, ProfileOrganization } from '@/lib/types';
 import { t } from '@/lib/i18n';
+import OrganizationSidebarSection from '@/components/vault/OrganizationSidebarSection';
 import { getFolderSortOptions, type SidebarFilter, type VaultSortMode } from '@/components/vault/vault-page-helpers';
 
 interface VaultSidebarProps {
@@ -45,6 +46,10 @@ interface VaultSidebarProps {
   onOpenDeleteFolder: (folder: Folder) => void;
   onToggleFolderSortMenu: () => void;
   onSelectFolderSortMode: (value: VaultSortMode) => void;
+  organizations: ProfileOrganization[];
+  collections: Collection[];
+  onOpenCreateOrganization: () => void;
+  onOpenOrganization: (organization: ProfileOrganization) => void;
 }
 
 export default function VaultSidebar(props: VaultSidebarProps) {
@@ -236,6 +241,16 @@ export default function VaultSidebar(props: VaultSidebarProps) {
           </div>
         ))}
       </div>
+
+      <OrganizationSidebarSection
+        organizations={props.organizations}
+        collections={props.collections}
+        sidebarFilter={props.sidebarFilter}
+        busy={props.busy}
+        onChangeFilter={props.onChangeFilter}
+        onOpenCreateOrganization={props.onOpenCreateOrganization}
+        onOpenOrganization={props.onOpenOrganization}
+      />
     </aside>
   );
 }

@@ -237,9 +237,19 @@ export interface CipherPasswordHistoryEntry {
   decPassword?: string;
 }
 
+export interface CipherPermissions {
+  delete: boolean;
+  restore: boolean;
+}
+
 export interface Cipher {
   id: string;
   type: number;
+  organizationId?: string | null;
+  collectionIds?: string[] | null;
+  edit?: boolean;
+  viewPassword?: boolean;
+  permissions?: CipherPermissions | null;
   folderId?: string | null;
   favorite?: boolean;
   reprompt?: number;
@@ -263,6 +273,63 @@ export interface Cipher {
   fields?: CipherField[] | null;
   decName?: string;
   decNotes?: string;
+}
+
+export enum MembershipType {
+  Owner = 0,
+  Admin = 1,
+  User = 2,
+  Manager = 3,
+}
+
+export enum MembershipStatus {
+  Invited = 0,
+  Accepted = 1,
+  Confirmed = 2,
+}
+
+export interface ProfileOrganization {
+  id: string;
+  name: string;
+  key: string | null;
+  status: MembershipStatus;
+  type: MembershipType;
+}
+
+export interface CollectionGrant {
+  readOnly: boolean;
+  hidePasswords: boolean;
+  manage: boolean;
+}
+
+export interface Collection extends CollectionGrant {
+  id: string;
+  organizationId: string;
+  name: string;
+  decName?: string;
+}
+
+export interface MemberCollectionGrant extends CollectionGrant {
+  id: string;
+}
+
+export interface OrganizationMember {
+  id: string;
+  userId: string;
+  name: string | null;
+  email: string;
+  status: MembershipStatus;
+  type: MembershipType;
+  accessAll: boolean;
+  collections: MemberCollectionGrant[];
+}
+
+export interface CollectionAccess {
+  id: string;
+  organizationId: string;
+  name: string;
+  decName?: string;
+  users: MemberCollectionGrant[];
 }
 
 export interface SendTextData {

@@ -1,4 +1,5 @@
 import type { AppMainRoutesProps } from '@/components/AppMainRoutes';
+import type { OrganizationActions } from '@/hooks/useOrganizationActions';
 import type { CompletedLogin, InitialAppBootstrapState } from '@/lib/app-auth';
 import type {
   AdminBackupImportResponse,
@@ -1245,6 +1246,33 @@ function createDemoBackupRun(settings: AdminBackupSettings, destinationId: strin
   };
 }
 
+function createDemoOrganizationActions(notifyReadonly: () => void): OrganizationActions {
+  const rejectChange = async () => {
+    notifyReadonly();
+    return false;
+  };
+  const rejectLoad = async () => {
+    notifyReadonly();
+    return null;
+  };
+  return {
+    createOrganization: rejectChange,
+    leaveOrganization: rejectChange,
+    deleteOrganization: rejectChange,
+    listMembers: rejectLoad,
+    inviteMember: rejectChange,
+    confirmMember: rejectChange,
+    updateMember: rejectChange,
+    removeMember: rejectChange,
+    listCollectionAccess: rejectLoad,
+    createCollection: rejectChange,
+    updateCollection: rejectChange,
+    deleteCollection: rejectChange,
+    shareCipher: rejectChange,
+    setCipherCollections: rejectChange,
+  };
+}
+
 export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Notify, state: DemoRouteState): AppMainRoutesProps {
   const readonly = async () => {
     notify('warning', t('txt_demo_readonly_message'));
@@ -1264,6 +1292,9 @@ export function createDemoMainRoutesProps(base: AppMainRoutesProps, notify: Noti
     decryptedCiphers: state.ciphers,
     decryptedFolders: state.folders,
     decryptedSends: state.sends,
+    organizations: [],
+    collections: [],
+    organizationActions: createDemoOrganizationActions(readonlyVoid),
     vaultError: '',
     ciphersLoading: false,
     foldersLoading: false,

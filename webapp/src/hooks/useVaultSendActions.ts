@@ -56,6 +56,7 @@ import { deriveLoginHash, getPreloginKdfConfig, verifyMasterPassword } from '@/l
 import type { AuthedFetch } from '@/lib/api/shared';
 import { downloadBytesAsFile } from '@/lib/download';
 import type { Cipher, Folder as VaultFolder, Profile, Send, SendDraft, SessionState, VaultDraft } from '@/lib/types';
+import { cipherBaseKey, sessionForCipher, type OrganizationKeys } from '@/lib/organization-keys';
 
 type Notify = (type: 'success' | 'error' | 'warning', text: string) => void;
 
@@ -78,6 +79,7 @@ interface UseVaultSendActionsOptions {
   patchDecryptedFolders: (updater: (prev: VaultFolder[]) => VaultFolder[]) => void;
   patchDecryptedSends: (updater: (prev: Send[]) => Send[]) => void;
   refreshVaultRevisionStamp: () => Promise<void>;
+  organizationKeys: OrganizationKeys;
 }
 
 function extractImportIdMaps(cipherMap: ImportedCipherMapEntry[] | null) {
@@ -304,6 +306,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
     patchDecryptedFolders,
     patchDecryptedSends,
     refreshVaultRevisionStamp,
+    organizationKeys,
   } = options;
   const [downloadingAttachmentKey, setDownloadingAttachmentKey] = useState('');
   const [attachmentDownloadPercent, setAttachmentDownloadPercent] = useState<number | null>(null);
@@ -322,6 +325,11 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
       throw new Error(t('txt_offline_vault_readonly'));
     };
 
+    function decryptWithCipherKey(activeSession: SessionState, encrypted: Cipher): Promise<Cipher> {
+      const baseKey = cipherBaseKey(activeSession, organizationKeys, encrypted.organizationId);
+      return decryptSingleCipher(encrypted, base64ToBytes(baseKey.encB64), base64ToBytes(baseKey.macB64));
+    }
+
     async function decryptAndPatch(encrypted: Cipher) {
       if (!session?.symEncKey || !session?.symMacKey) {
         await refetchCiphers();
@@ -336,9 +344,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         }
         return [encrypted, ...prev];
       });
-      const encKey = base64ToBytes(session.symEncKey);
-      const macKey = base64ToBytes(session.symMacKey);
-      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey);
+      const decrypted = await decryptWithCipherKey(session, encrypted);
       patchDecryptedCiphers((prev) => {
         const idx = prev.findIndex((c) => c.id === decrypted.id);
         if (idx >= 0) {
@@ -356,9 +362,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         return;
       }
       patchEncryptedCiphers((prev) => [encrypted, ...prev.filter((cipher) => cipher.id !== optimisticId && cipher.id !== encrypted.id)]);
-      const encKey = base64ToBytes(session.symEncKey);
-      const macKey = base64ToBytes(session.symMacKey);
-      const decrypted = await decryptSingleCipher(encrypted, encKey, macKey);
+      const decrypted = await decryptWithCipherKey(session, encrypted);
       patchDecryptedCiphers((prev) => {
         const next = prev.filter((cipher) => cipher.id !== optimisticId && cipher.id !== decrypted.id);
         return [decrypted, ...next];
@@ -592,7 +596,8 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         }
         patchCipherBatch([cipher.id], () => optimistic, { patchEncrypted: false });
         try {
-          const updated = await updateCipher(authedFetch, session, cipher, draft);
+          const cipherSession = sessionForCipher(session, organizationKeys, cipher);
+          const updated = await updateCipher(authedFetch, cipherSession, cipher, draft);
           for (const attachmentId of removeAttachmentIds) {
             const id = String(attachmentId || '').trim();
             if (!id) continue;
@@ -601,7 +606,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
           for (const file of addFiles) {
             setUploadingAttachmentName(file.name);
             setAttachmentUploadPercent(0);
-            await uploadCipherAttachment(authedFetch, session, cipher.id, file, cipher, setAttachmentUploadPercent);
+            await uploadCipherAttachment(authedFetch, cipherSession, cipher.id, file, cipher, setAttachmentUploadPercent);
           }
           const finalCipher = addFiles.length || removeAttachmentIds.length
             ? await getCipherById(authedFetch, cipher.id)
@@ -629,7 +634,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         setDownloadingAttachmentKey(downloadKey);
         setAttachmentDownloadPercent(null);
         try {
-          const file = await downloadCipherAttachmentDecrypted(authedFetch, session, cipher, attachmentId, setAttachmentDownloadPercent);
+          const file = await downloadCipherAttachmentDecrypted(authedFetch, sessionForCipher(session, organizationKeys, cipher), cipher, attachmentId, setAttachmentDownloadPercent);
           const fileName = String(file.fileName || '').trim() || 'attachment.bin';
           downloadBytesAsFile(file.bytes, fileName, 'application/octet-stream');
         } catch (error) {
@@ -1161,7 +1166,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
         await verifyMasterPassword(authedFetch, verifyDerived.hash);
 
         const rawFolders = encryptedFolders || [];
-        const rawCiphers = encryptedCiphers || [];
+        const rawCiphers = (encryptedCiphers || []).filter((cipher) => !cipher.organizationId);
         if (!rawFolders || !rawCiphers) throw new Error(t('txt_vault_not_ready'));
 
         let plainJsonCache: string | null = null;
@@ -1204,7 +1209,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
           const userEnc = base64ToBytes(session.symEncKey!);
           const userMac = base64ToBytes(session.symMacKey!);
           const out: ZipAttachmentEntry[] = [];
-          const activeCiphers = rawCiphers.filter((cipher) => !cipher.deletedDate && !(cipher as { organizationId?: unknown }).organizationId);
+          const activeCiphers = rawCiphers.filter((cipher) => !cipher.deletedDate);
 
           for (const cipher of activeCiphers) {
             const cipherId = String(cipher.id || '').trim();
@@ -1408,6 +1413,7 @@ export default function useVaultSendActions(options: UseVaultSendActionsOptions)
     refetchFolders,
     refetchSends,
     refreshVaultRevisionStamp,
+    organizationKeys,
     session,
     sendUploadPercent,
     uploadingAttachmentName,

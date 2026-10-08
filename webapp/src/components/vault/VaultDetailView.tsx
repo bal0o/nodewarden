@@ -1,6 +1,6 @@
 import { createPortal } from 'preact/compat';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { AlertTriangle, Archive, Clipboard, Download, Eye, EyeOff, ExternalLink, Folder, Paperclip, Pencil, RefreshCw, RotateCcw, ShieldCheck, ShieldAlert, Trash2, X } from 'lucide-preact';
+import { AlertTriangle, Archive, Building2, Clipboard, Download, Eye, EyeOff, ExternalLink, Folder, Library, Paperclip, Pencil, RefreshCw, RotateCcw, Share2, ShieldCheck, ShieldAlert, Trash2, X } from 'lucide-preact';
 import { useDialogLifecycle } from '@/components/ConfirmDialog';
 import type { TotpCodeResult } from '@/lib/crypto';
 import { checkPasswordLeaked, type PasswordBreachResult } from '@/lib/password-security';
@@ -45,6 +45,10 @@ interface VaultDetailViewProps {
   onRestore: (cipher: Cipher) => void | Promise<void>;
   onArchive: (cipher: Cipher) => void | Promise<void>;
   onUnarchive: (cipher: Cipher) => void | Promise<void>;
+  organizationLabel: string | null;
+  canShare: boolean;
+  onShare: (cipher: Cipher) => void;
+  onEditCollections: (cipher: Cipher) => void;
 }
 
 function totpProgress(live: TotpCodeResult | null): number {
@@ -100,6 +104,11 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
   const breachControllerRef = useRef<AbortController | null>(null);
   const isArchived = !!(props.selectedCipher.archivedDate || (props.selectedCipher as { archivedAt?: string | null }).archivedAt);
   const isDeleted = isCipherDeleted(props.selectedCipher);
+  const canEdit = props.selectedCipher.edit !== false;
+  const canViewPassword = props.selectedCipher.viewPassword !== false;
+  const canDelete = props.selectedCipher.permissions?.delete !== false;
+  const canRestore = props.selectedCipher.permissions?.restore !== false;
+  const isOrganizationItem = !!props.selectedCipher.organizationId;
   const passwordHistoryEntries = useMemo(
     () =>
       (props.selectedCipher.passwordHistory || [])
@@ -178,6 +187,12 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                   <Folder size={13} aria-hidden="true" />
                   <span>{props.folderName(props.selectedCipher.folderId)}</span>
                 </div>
+                {props.organizationLabel && (
+                  <div className="detail-folder-line">
+                    <Building2 size={13} aria-hidden="true" />
+                    <span>{props.organizationLabel}</span>
+                  </div>
+                )}
               </div>
             </div>
             {isArchived && <div className="list-badge archive-badge">{t('txt_archived')}</div>}
@@ -200,9 +215,9 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
               <div className="kv-row">
                 <span className="kv-label">{t('txt_password')}</span>
                 <div className="kv-main">
-                  <strong>{props.showPassword ? props.selectedCipher.login.decPassword || '' : maskSecret(props.selectedCipher.login.decPassword || '')}</strong>
+                  <strong>{props.showPassword && canViewPassword ? props.selectedCipher.login.decPassword || '' : maskSecret(props.selectedCipher.login.decPassword || '')}</strong>
                 </div>
-                <div className="kv-actions">
+                {canViewPassword && <div className="kv-actions">
                   <button type="button" className="btn btn-secondary small" onClick={props.onToggleShowPassword}>
                     {props.showPassword ? <EyeOff size={14} className="btn-icon" /> : <Eye size={14} className="btn-icon" />}
                     {props.showPassword ? t('txt_hide') : t('txt_reveal')}
@@ -214,7 +229,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                     {checkingBreach ? <RefreshCw size={14} className="btn-icon spin" /> : <ShieldCheck size={14} className="btn-icon" />}
                     {checkingBreach ? t('txt_checking_password_security') : t('txt_check_password_breach')}
                   </button>
-                </div>
+                </div>}
               </div>
               {breachResult && (
                 <div className={`password-breach-inline ${breachResult.available ? (breachResult.count ? 'danger' : 'safe') : 'warning'}`} role="status">
@@ -222,7 +237,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                   <span>{breachResult.available ? (breachResult.count ? t('txt_password_exposed_count', { count: breachResult.count }) : t('txt_password_not_found_in_breaches')) : t('txt_password_security_check_failed')}</span>
                 </div>
               )}
-              {!!props.selectedCipher.login.decTotp && (
+              {canViewPassword && !!props.selectedCipher.login.decTotp && (
                 <div className="kv-row">
                   <span className="kv-label">{t('txt_totp')}</span>
                   <div className="kv-main">
@@ -341,6 +356,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                   </strong>
                 </div>
                 <div className="kv-actions">
+                  {canViewPassword && <>
                   <button type="button" className="btn btn-secondary small" onClick={() => setShowSshPrivateKey((value) => !value)}>
                     {showSshPrivateKey ? <EyeOff size={14} className="btn-icon" /> : <Eye size={14} className="btn-icon" />}
                     {showSshPrivateKey ? t('txt_hide') : t('txt_reveal')}
@@ -348,6 +364,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                   <button type="button" className="btn btn-secondary small" onClick={() => copyToClipboard(props.selectedCipher.sshKey?.decPrivateKey || '')}>
                     <Clipboard size={14} className="btn-icon" /> {t('txt_copy')}
                   </button>
+                  </>}
                 </div>
               </div>
               <div className="kv-row">
@@ -444,7 +461,8 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                   const fieldType = parseFieldType(field.type);
                   const fieldName = field.decName || t('txt_field');
                   const rawValue = field.decValue || '';
-                  const isHiddenVisible = !!props.hiddenFieldVisibleMap[index];
+                  const isHiddenVisible = canViewPassword && !!props.hiddenFieldVisibleMap[index];
+                  const isHiddenLocked = fieldType === 1 && !canViewPassword;
                   if (fieldType === 2) {
                     const checked = toBooleanFieldValue(rawValue);
                     return (
@@ -480,7 +498,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                             {fieldType === 1 && !isHiddenVisible ? maskSecret(rawValue) : rawValue}
                           </strong>
                         </div>
-                        <div className="kv-actions">
+                        {!isHiddenLocked && <div className="kv-actions">
                         {fieldType === 1 && (
                           <button type="button" className="btn btn-secondary small" onClick={() => props.onToggleHiddenField(index)}>
                             {isHiddenVisible ? <EyeOff size={14} className="btn-icon" /> : <Eye size={14} className="btn-icon" />}
@@ -490,7 +508,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                         <button type="button" className="btn btn-secondary small" onClick={() => copyToClipboard(rawValue)}>
                           <Clipboard size={14} className="btn-icon" /> {t('txt_copy')}
                         </button>
-                        </div>
+                        </div>}
                       </div>
                     </div>
                   );
@@ -540,7 +558,7 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
               {!!props.selectedCipher.login?.passwordRevisionDate && (
                 <div className="detail-sub">{t('txt_password_updated_value', { value: formatHistoryTime(props.selectedCipher.login.passwordRevisionDate) })}</div>
               )}
-              {passwordHistoryEntries.length > 0 && (
+              {canViewPassword && passwordHistoryEntries.length > 0 && (
                 <button type="button" className="password-history-link" onClick={() => setPasswordHistoryOpen(true)}>
                   {t('txt_password_history')}
                 </button>
@@ -551,15 +569,29 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
           <div className="detail-actions">
             <div className="actions">
               {isDeleted ? (
-                <button type="button" className="btn btn-secondary" onClick={() => void props.onRestore(props.selectedCipher)}>
-                  <RotateCcw size={14} className="btn-icon" /> {t('txt_restore')}
-                </button>
+                canRestore && (
+                  <button type="button" className="btn btn-secondary" onClick={() => void props.onRestore(props.selectedCipher)}>
+                    <RotateCcw size={14} className="btn-icon" /> {t('txt_restore')}
+                  </button>
+                )
               ) : (
                 <>
-                  <button type="button" className="btn btn-secondary" onClick={props.onStartEdit}>
-                    <Pencil size={14} className="btn-icon" /> {t('txt_edit')}
-                  </button>
-                  {isArchived ? (
+                  {canEdit && (
+                    <button type="button" className="btn btn-secondary" onClick={props.onStartEdit}>
+                      <Pencil size={14} className="btn-icon" /> {t('txt_edit')}
+                    </button>
+                  )}
+                  {!isOrganizationItem && props.canShare && (
+                    <button type="button" className="btn btn-secondary" onClick={() => props.onShare(props.selectedCipher)}>
+                      <Share2 size={14} className="btn-icon" /> {t('txt_share_item')}
+                    </button>
+                  )}
+                  {isOrganizationItem && canEdit && (
+                    <button type="button" className="btn btn-secondary" onClick={() => props.onEditCollections(props.selectedCipher)}>
+                      <Library size={14} className="btn-icon" /> {t('txt_collections')}
+                    </button>
+                  )}
+                  {!canEdit ? null : isArchived ? (
                     <button type="button" className="btn btn-secondary" onClick={() => void props.onUnarchive(props.selectedCipher)}>
                       <RotateCcw size={14} className="btn-icon" /> {t('txt_unarchive')}
                     </button>
@@ -571,9 +603,11 @@ export default function VaultDetailView(props: VaultDetailViewProps) {
                 </>
               )}
             </div>
-            <button type="button" className="btn btn-danger" onClick={() => props.onDelete(props.selectedCipher)}>
-              <Trash2 size={14} className="btn-icon" /> {isDeleted ? t('txt_delete_permanently') : t('txt_delete')}
-            </button>
+            {canDelete && (
+              <button type="button" className="btn btn-danger" onClick={() => props.onDelete(props.selectedCipher)}>
+                <Trash2 size={14} className="btn-icon" /> {isDeleted ? t('txt_delete_permanently') : t('txt_delete')}
+              </button>
+            )}
           </div>
         </>
       )}

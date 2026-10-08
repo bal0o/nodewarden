@@ -43,7 +43,10 @@ import {
   handleBulkRestoreCiphers,
   handleArchiveCipher,
   handleUnarchiveCipher,
+  handleShareCipher,
 } from './handlers/ciphers';
+import { handleSetCipherCollections } from './handlers/collections';
+import { handleOrganizationRoute } from './router-organizations';
 import {
   handleGetFolders,
   handleGetFolder,
@@ -287,6 +290,9 @@ export async function handleAuthenticatedRoute(
     return errorResponse('Not found', 404);
   }
 
+  const organizationResponse = await handleOrganizationRoute(request, env, userId, path, method);
+  if (organizationResponse) return organizationResponse;
+
   if (path === '/api/ciphers' || path === '/api/ciphers/create') {
     if (method === 'GET') return handleGetCiphers(request, env, userId);
     if (method === 'POST') return handleCreateCipher(request, env, userId);
@@ -339,8 +345,18 @@ export async function handleAuthenticatedRoute(
     if (subPath === '/archive' && (method === 'PUT' || method === 'POST')) return handleArchiveCipher(request, env, userId, cipherId);
     if (subPath === '/unarchive' && (method === 'PUT' || method === 'POST')) return handleUnarchiveCipher(request, env, userId, cipherId);
     if (subPath === '/partial' && (method === 'PUT' || method === 'POST')) return handlePartialUpdateCipher(request, env, userId, cipherId);
-    if (subPath === '/share' && method === 'POST') return handleGetCipher(request, env, userId, cipherId);
-    if (subPath === '/details' && method === 'GET') return handleGetCipher(request, env, userId, cipherId);
+    if (subPath === '/share' && (method === 'PUT' || method === 'POST')) return handleShareCipher(request, env, userId, cipherId);
+    if ((subPath === '/details' || subPath === '/admin') && method === 'GET') return handleGetCipher(request, env, userId, cipherId);
+    if (subPath === '/admin' && (method === 'PUT' || method === 'POST')) return handleUpdateCipher(request, env, userId, cipherId);
+    if (subPath === '/admin' && method === 'DELETE') return handlePermanentDeleteCipher(request, env, userId, cipherId);
+    if (subPath === '/delete-admin' && method === 'PUT') return handleDeleteCipher(request, env, userId, cipherId);
+    if (subPath === '/restore-admin' && method === 'PUT') return handleRestoreCipher(request, env, userId, cipherId);
+    if ((subPath === '/collections' || subPath === '/collections-admin') && (method === 'PUT' || method === 'POST')) {
+      return handleSetCipherCollections(request, env, userId, cipherId, 'cipher');
+    }
+    if (subPath === '/collections_v2' && (method === 'PUT' || method === 'POST')) {
+      return handleSetCipherCollections(request, env, userId, cipherId, 'optional');
+    }
     if (subPath === '/attachment/v2' && method === 'POST') return handleCreateAttachment(request, env, userId, cipherId);
     if (subPath === '/attachment' && method === 'POST') return handleCreateAttachment(request, env, userId, cipherId);
 
@@ -401,20 +417,6 @@ export async function handleAuthenticatedRoute(
     if (method === 'GET') return handleGetAuthRequest(request, env, userId, authRequestMatch[1]);
     if (method === 'PUT') return handleUpdateAuthRequest(request, env, userId, authRequestMatch[1]);
     return errorResponse('Method not allowed', 405);
-  }
-
-  if (path === '/api/collections' || path.startsWith('/api/collections/')) {
-    if (method === 'GET') {
-      return jsonResponse({ data: [], object: 'list', continuationToken: null });
-    }
-    return null;
-  }
-
-  if (path === '/api/organizations' || path.startsWith('/api/organizations/')) {
-    if (method === 'GET') {
-      return jsonResponse({ data: [], object: 'list', continuationToken: null });
-    }
-    return null;
   }
 
   if (path === '/api/sends') {
